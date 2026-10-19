@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https://login.microsoftonline.com https://graph.microsoft.com https://*.sharepoint.com; frame-src https://login.microsoftonline.com; form-action https://login.microsoftonline.com; base-uri 'self'; object-src 'none'; manifest-src 'self'; worker-src 'self'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f2742">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Muir Receipts">
+<title>Muir Receipts</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<style>
+  :root {
+    --navy: #0f2742; --navy-2: #163a5f; --accent: #e8a33d; --accent-ink: #1a1a1a;
+    --bg: #f4f6f8; --card: #ffffff; --ink: #14202e; --muted: #5b6b7c; --line: #d9e0e7;
+    --ok: #1f8a4c; --warn: #b7471f; --chip: #e9eef3; --chip-on: var(--navy);
+    --radius: 14px; --pad: 16px;
+    --safe-top: env(safe-area-inset-top, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  body { display: flex; flex-direction: column; min-height: 100dvh; }
+  header { background: var(--navy); color: #fff; padding: calc(var(--safe-top) + 12px) var(--pad) 12px;
+    display: flex; align-items: center; justify-content: space-between; }
+  header .brand { font-weight: 700; letter-spacing: .3px; font-size: 18px; display: flex; align-items: center; gap: 10px; }
+  header .brand svg { width: 26px; height: 26px; }
+  header .who { font-size: 13px; opacity: .85; max-width: 55%; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  main { flex: 1; padding: var(--pad); padding-bottom: calc(var(--pad) + var(--safe-bottom)); display: flex; flex-direction: column; gap: 14px; }
+  .screen { display: none; flex-direction: column; gap: 14px; }
+  .screen.active { display: flex; }
+  .card { background: var(--card); border-radius: var(--radius); padding: var(--pad); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.muted { color: var(--muted); margin: 0; font-size: 14px; }
+  .big-btn { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%;
+    min-height: 120px; border: 0; border-radius: var(--radius); background: var(--navy); color: #fff;
+    font-size: 22px; font-weight: 700; cursor: pointer; }
+  .big-btn svg { width: 40px; height: 40px; }
+  .big-btn:active { background: var(--navy-2); }
+  .row { display: flex; gap: 10px; }
+  .btn { flex: 1; min-height: 52px; border-radius: 12px; border: 1px solid var(--line); background: #fff; color: var(--ink);
+    font-size: 16px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.ghost { background: transparent; }
+  .btn:disabled { opacity: .5; }
+  .btn svg { width: 20px; height: 20px; }
+  input[type=file] { display: none; }
+  .thumbs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+  .thumb { position: relative; flex: 0 0 auto; width: 84px; height: 84px; border-radius: 10px; overflow: hidden; background: #e3e8ee; border: 1px solid var(--line); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb .pdf { display: flex; align-items: center; justify-content: center; height: 100%; font-weight: 700; color: var(--muted); }
+  .thumb button { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border-radius: 50%; border: 0; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 24px; padding: 0; }
+  .thumb.add { display: flex; align-items: center; justify-content: center; font-size: 30px; color: var(--muted); background: #fff; border-style: dashed; }
+  label.field { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin: 10px 0 6px; text-transform: uppercase; letter-spacing: .4px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { border: 1px solid var(--line); background: var(--chip); color: var(--ink); border-radius: 999px; padding: 9px 14px; font-size: 15px; cursor: pointer; }
+  .chip.on { background: var(--chip-on); color: #fff; border-color: var(--chip-on); }
+  textarea, input[type=text], select { width: 100%; font: inherit; font-size: 17px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--ink); }
+  textarea { min-height: 72px; resize: vertical; }
+  .toggle { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--line); }
+  .toggle:first-of-type { border-top: 0; }
+  .switch { position: relative; width: 50px; height: 30px; border-radius: 15px; background: #cfd6de; border: 0; cursor: pointer; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .switch.on { background: var(--ok); }
+  .switch.on::after { left: 23px; }
+  .hidden { display: none !important; }
+  .status { font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  .status.off .dot { background: var(--warn); }
+  .done { text-align: center; padding: 28px 16px; }
+  .done .tick { width: 72px; height: 72px; border-radius: 50%; background: var(--ok); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 40px; margin-bottom: 12px; }
+  .queue { background: #fff7e8; border: 1px solid #f0d9a8; border-radius: 12px; padding: 10px 12px; font-size: 14px; }
+  .err { background: #fdecea; border: 1px solid #f5c2bd; color: #7a1f14; border-radius: 12px; padding: 10px 12px; font-size: 14px; }
+  .list { margin: 0; padding: 0; list-style: none; }
+  .list li { display: flex; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  .list li:first-child { border-top: 0; }
+  footer { padding: 6px var(--pad) calc(10px + var(--safe-bottom)); font-size: 12px; color: var(--muted); text-align: center; }
+  footer a { color: var(--muted); }
+  .spinner { width: 18px; height: 18px; border: 3px solid rgba(0,0,0,.15); border-top-color: var(--accent-ink); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b1420; --card: #122033; --ink: #e8eef5; --muted: #9fb0c2; --line: #233850; --chip: #1a2c42; }
+    textarea, input[type=text], select, .btn { background: #122033; color: var(--ink); }
+    .thumb.add { background: #122033; }
+    .queue { background: #2a2210; border-color: #5a4a1e; color: #f1e2bd; }
+    .err { background: #3a1a16; border-color: #6b2a22; color: #f7c8c2; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/>
+    </svg>
+    Muir Receipts
+  </div>
+  <div class="who" id="who"></div>
+</header>
+
+<main>
+  <!-- Sign-in -->
+  <section class="screen" id="s-signin">
+    <div class="card">
+      <h1>Sign in</h1>
+      <p class="muted">Use your Muir Microsoft 365 account. Receipts you send are filed under your name in the finance register.</p>
+    </div>
+    <button class="big-btn" id="btn-signin">Sign in with Microsoft</button>
+    <div class="err hidden" id="signin-err"></div>
+  </section>
+
+  <!-- Capture -->
+  <section class="screen" id="s-capture">
+    <button class="big-btn" id="btn-camera" aria-label="Take a photo of a receipt">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z"/><circle cx="12" cy="13" r="4"/>
+      </svg>
+      Snap a receipt
+    </button>
+    <div class="row">
+      <button class="btn" id="btn-gallery">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+        Photo library
+      </button>
+      <button class="btn" id="btn-file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+        PDF / e-receipt
+      </button>
+    </div>
+    <input type="file" id="in-camera" accept="image/*" capture="environment" multiple>
+    <input type="file" id="in-gallery" accept="image/*" multiple>
+    <input type="file" id="in-file" accept="image/*,application/pdf" multiple>
+    <div class="queue hidden" id="queue-banner"></div>
+    <div class="card hidden" id="tofinish-card">
+      <label class="field" style="margin-top:0">To finish — photo sent, details still needed</label>
+      <ul class="list" id="tofinish"></ul>
+    </div>
+    <div class="card">
+      <div class="status" id="net-status"><span class="dot"></span><span>Online</span></div>
+      <ul class="list" id="recent"></ul>
+    </div>
+  </section>
+
+  <!-- Details -->
+  <section class="screen" id="s-details">
+    <div class="card">
+      <div class="thumbs" id="thumbs"></div>
+      <label class="field">Expense type</label>
+      <div class="chips" id="types"></div>
+      <label class="field" for="reason">Reason</label>
+      <textarea id="reason" placeholder="What it's for, and who was there if paying for others" autocomplete="off"></textarea>
+      <div id="attendees-wrap" class="hidden">
+        <div class="row">
+          <div style="flex:1;min-width:0"><label class="field" for="n-muir">No. Muir employees</label><input type="number" id="n-muir" inputmode="numeric" min="0" placeholder="0"></div>
+          <div style="flex:1;min-width:0"><label class="field" for="n-clients">No. clients</label><input type="number" id="n-clients" inputmode="numeric" min="0" placeholder="0"></div>
+        </div>
+        <label class="field" for="attendees">Who attended (optional)</label>
+        <input type="text" id="attendees" placeholder="e.g. M Buckley, E van der Beek (Onboard Marine)">
+      </div>
+      <label class="field">Currency</label>
+      <div class="chips" id="currencies"></div>
+      <div id="project-wrap" class="hidden">
+        <label class="field" for="project">Project / job (optional)</label>
+        <input type="text" id="project" list="project-list" placeholder="optional">
+        <datalist id="project-list"></datalist>
+      </div>
+      <div class="toggle">
+        <span>Payment: <strong id="pay-label">Credit Card</strong></span>
+        <button class="switch" id="sw-cash" role="switch" aria-checked="false" aria-label="Paid in cash"></button>
+      </div>
+      <div class="toggle">
+        <span><strong>To be reimbursed</strong> (paid personally)</span>
+        <button class="switch" id="sw-personal" role="switch" aria-checked="false" aria-label="To be reimbursed"></button>
+      </div>
+    </div>
+    <div class="err hidden" id="send-err"></div>
+    <div class="row">
+      <button class="btn ghost" id="btn-back">Back</button>
+      <button class="btn primary" id="btn-send">Send to finance</button>
+    </div>
+    <button class="btn" id="btn-later" style="width:100%">No time now — send photo, add details later</button>
+  </section>
+
+  <!-- Done -->
+  <section class="screen" id="s-done">
+    <div class="card done">
+      <div class="tick">✓</div>
+      <h1 id="done-title">Sent</h1>
+      <p class="muted" id="done-text"></p>
+    </div>
+    <button class="big-btn" id="btn-another">Snap another</button>
+  </section>
+</main>
+
+<footer>
+  <span id="version">Muir Receipts</span> · <a href="#" id="btn-signout">Sign out</a>
+</footer>
+
+<script src="msal-browser.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
