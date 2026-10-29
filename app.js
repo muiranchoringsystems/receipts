@@ -5,7 +5,7 @@
    Demo mode (?demo=1): no sign-in, uploads are simulated — for previews and UI testing. */
 (() => {
   "use strict";
-  const APP_VERSION = "0.4.4";
+  const APP_VERSION = "0.4.5";
   const CFG = window.MUIR_CONFIG || {};
   // v0.4.1 lists live here (not in config.js) so the deployed config.js with the real clientId stays untouched.
   const APP_LISTS = {
@@ -32,6 +32,20 @@
       },
       // Types that ask how many Muir staff and clients (FBT)
       attendeeTypes: ["Entertainment – staff only", "Entertainment – with clients", "Meals while travelling"],
+      // "Whose card or cash paid?" — defaults to the signed-in person; lets e.g. accounts photograph a receipt for someone else.
+      // Keep in step with the register's Lookups › Cardholders.
+      cardholders: [
+        { name: "Andrew Buckley", upn: "andrew.buckley@muir.com.au" },
+        { name: "Chris Evans", upn: "chris@muir.com.au" },
+        { name: "Cory Ovlaque", upn: "corentin.ovlaque@muir.com.au" },
+        { name: "Felipe Bernardes", upn: "felipe.bernardes@muir.com.au" },
+        { name: "Grant Morgan", upn: "grant.morgan@muir.com.au" },
+        { name: "Kelly Du Bois", upn: "kelly.dubois@muir.com.au" },
+        { name: "Kusa Weir", upn: "kusa.weir@muir.com.au" },
+        { name: "Max Buckley", upn: "max.buckley@muir.com.au" },
+        { name: "Sam Crowle", upn: "sam.crowle@muir.com.au" },
+        { name: "Shaun Hancock", upn: "shaun.hancock@muir.com.au" },
+      ],
     reasonPlaceholder: "e.g. Taxi to airport, Dinner with Onboard Marine — who was there if paying for others",
   };
 
@@ -95,7 +109,7 @@
     attendeesWrap: $("attendees-wrap"), attendees: $("attendees"), nMuir: $("n-muir"), nClients: $("n-clients"),
     currencies: $("currencies"),
     projectWrap: $("project-wrap"), project: $("project"), projectList: $("project-list"),
-    swPersonal: $("sw-personal"), payCard: $("pay-card"), payCash: $("pay-cash"),
+    swPersonal: $("sw-personal"), payCard: $("pay-card"), payCash: $("pay-cash"), belongs: $("belongs"), belongsHint: $("belongs-hint"),
     sendErr: $("send-err"), btnBack: $("btn-back"), btnSend: $("btn-send"), btnLater: $("btn-later"),
     tofinishCard: $("tofinish-card"), tofinish: $("tofinish"),
     doneTitle: $("done-title"), doneText: $("done-text"), btnAnother: $("btn-another"), btnSignout: $("btn-signout"),
@@ -137,7 +151,7 @@
   }
   async function initAuth() {
     if (DEMO) {
-      state.user = { name: "Demo User", upn: "demo@muir.com.au" };
+      state.user = { name: "Demo User", upn: "demo@muir.com.au" }; renderBelongs(null);
       return true;
     }
     if (!CFG.clientId || CFG.clientId.startsWith("REPLACE")) {
@@ -152,7 +166,8 @@
     if (!account) return false;
     m.setActiveAccount(account);
     state.account = account;
-    state.user = { name: account.name || account.username, upn: account.username };
+    state.user = { name: String(account.name || account.username).split("|")[0].trim(), upn: account.username };
+    renderBelongs(null);
     return true;
   }
   function signIn() {
@@ -347,11 +362,34 @@
     el.attendeesWrap.classList.toggle("hidden", !needAttendees);
   }
   function setSwitch(btn, on) { btn.classList.toggle("on", on); btn.setAttribute("aria-checked", String(on)); }
+  // ---------- Whose card or cash (default: me) ----------
+  function renderBelongs(selectedUpn) {
+    if (!el.belongs || !state.user) return;
+    const me = (state.user.upn || "").toLowerCase();
+    const others = (state.lists.cardholders || []).filter((c) => c.upn.toLowerCase() !== me);
+    el.belongs.innerHTML = "";
+    const add = (value, label) => { const o = document.createElement("option"); o.value = value; o.textContent = label; el.belongs.appendChild(o); };
+    add("", `Me (${state.user.name})`);
+    others.forEach((c) => add(c.upn, c.name));
+    el.belongs.value = selectedUpn && others.some((c) => c.upn === selectedUpn) ? selectedUpn : "";
+    updateBelongsHint();
+  }
+  function belongsTo() {
+    const v = el.belongs ? el.belongs.value : "";
+    const c = v && (state.lists.cardholders || []).find((x) => x.upn === v);
+    return c ? { name: c.name, upn: c.upn, onBehalf: true } : { name: state.user.name, upn: state.user.upn, onBehalf: false };
+  }
+  function updateBelongsHint() {
+    const b = belongsTo();
+    el.belongs.classList.toggle("behalf", b.onBehalf);
+    el.belongsHint.textContent = b.onBehalf ? `Sent by you for ${b.name} — it goes on ${b.name.split(" ")[0]}'s list${state.cash ? " and any reimbursement is theirs" : ""}.`
+                                            : "Leave as you unless you're sending this for someone else.";
+  }
   function resetForm() {
     state.files.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl));
     state.files = []; state.expenseType = null; state.personal = false; state.cash = false; state.currency = null; state.finishing = null;
     el.reason.value = ""; el.attendees.value = ""; el.project.value = ""; el.nMuir.value = ""; el.nClients.value = "";
-    setSwitch(el.swPersonal, false); el.payCard.checked = true; el.payCash.checked = false;
+    setSwitch(el.swPersonal, false); el.payCard.checked = true; el.payCash.checked = false; renderBelongs(null);
     el.sendErr.classList.add("hidden");
     [el.inCamera, el.inGallery, el.inFile].forEach((i) => (i.value = ""));
     renderTypes(); renderCurrencies(); updateConditional(); updateReasonPreview();
@@ -382,6 +420,7 @@
     const meta = {
       schema: "muir-receipt/2", app: `muir-receipts-pwa ${APP_VERSION}`, status,
       submitted_by: { name: state.user.name, upn: state.user.upn },
+      cardholder: (() => { const b = belongsTo(); return { name: b.name, upn: b.upn }; })(), on_behalf: belongsTo().onBehalf,
       captured_at: fin ? fin.meta.captured_at : localDraft ? fin0.captured_at : now.toISOString(), details_at: status === "complete" ? now.toISOString() : null,
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
       expense_type: state.expenseType, reason: fullReason() || null, reason_text: el.reason.value.trim() || null,
@@ -412,7 +451,7 @@
       captured_at: fin0 && fin0.captured_at ? fin0.captured_at : new Date().toISOString(),
       files: state.files.map((f) => ({ type: f.type, blob: f.blob, kind: f.kind })), pages: state.files.length,
       fields: { expenseType: state.expenseType, reason: el.reason.value, currency: state.currency, cash: state.cash, personal: state.personal,
-                attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value },
+                attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value, belongs: el.belongs.value },
     };
     await draftPut(draft);
     askNotifyPermission();   // needed for the icon badge on iPhone; asked once, on this tap
@@ -430,6 +469,7 @@
       el.reason.value = x.reason || ""; el.attendees.value = x.attendees || ""; el.nMuir.value = x.nMuir || ""; el.nClients.value = x.nClients || ""; el.project.value = x.project || "";
       el.payCash.checked = state.cash; el.payCard.checked = !state.cash; setSwitch(el.swPersonal, state.personal);
       state.currency = x.currency || null;
+      renderBelongs(x.belongs || null);
       renderThumbs(); renderTypes(); renderCurrencies(); updateConditional(); updateReasonPreview();
       el.btnSend.textContent = "Send to finance";
       show("details"); setTimeout(() => el.reason.focus(), 200);
@@ -592,8 +632,9 @@
   [el.inCamera, el.inGallery, el.inFile].forEach((i) => (i.onchange = () => addFiles(i.files)));
   el.swPersonal.onclick = () => { state.personal = !state.personal; setSwitch(el.swPersonal, state.personal); };
   // Paid with: Muir credit card (default) or Cash. Cash was paid personally, so it switches "To be reimbursed" on (can be turned off).
-  el.payCard.onchange = () => { if (el.payCard.checked) { state.cash = false; } };
-  el.payCash.onchange = () => { if (el.payCash.checked) { state.cash = true; state.personal = true; setSwitch(el.swPersonal, true); } };
+  el.payCard.onchange = () => { if (el.payCard.checked) { state.cash = false; } updateBelongsHint(); };
+  el.payCash.onchange = () => { if (el.payCash.checked) { state.cash = true; state.personal = true; setSwitch(el.swPersonal, true); } updateBelongsHint(); };
+  el.belongs.onchange = updateBelongsHint;
   el.btnBack.onclick = () => { if (state.finishing) { resetForm(); el.btnLater.classList.remove("hidden"); el.btnSend.textContent = "Send to finance"; } show("capture"); };
   el.btnSend.onclick = send;
   el.btnLater.onclick = sendLater;

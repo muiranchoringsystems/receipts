@@ -72,6 +72,7 @@
   .toggle { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--line); }
   .toggle:first-of-type { border-top: 0; }
   .radios { display: flex; gap: 10px; margin-bottom: 4px; }
+  select.behalf { border-color: #d97706; box-shadow: 0 0 0 1px #d97706 inset; font-weight: 600; }
   .radio { flex: 1; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--chip); color: var(--ink); font-size: 15px; cursor: pointer; }
   .radio input { width: 20px; height: 20px; margin: 0; accent-color: var(--ok); flex: none; }
   .radio:has(input:checked) { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; font-weight: 600; }
@@ -198,6 +199,9 @@
         <span><strong>To be reimbursed</strong> (paid personally)</span>
         <button class="switch" id="sw-personal" role="switch" aria-checked="false" aria-label="To be reimbursed"></button>
       </div>
+      <label class="field" for="belongs">Whose card or cash paid?</label>
+      <select id="belongs" aria-describedby="belongs-hint"></select>
+      <div class="muted" id="belongs-hint" style="font-size:13px;margin-top:4px">Leave as you unless you're sending this for someone else.</div>
     </div>
     <div class="err hidden" id="send-err"></div>
     <div class="row">
