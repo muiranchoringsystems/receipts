@@ -5,7 +5,7 @@
    Demo mode (?demo=1): no sign-in, uploads are simulated — for previews and UI testing. */
 (() => {
   "use strict";
-  const APP_VERSION = "0.4.3";
+  const APP_VERSION = "0.4.4";
   const CFG = window.MUIR_CONFIG || {};
   // v0.4.1 lists live here (not in config.js) so the deployed config.js with the real clientId stays untouched.
   const APP_LISTS = {
@@ -37,6 +37,51 @@
 
   const GRAPH = "https://graph.microsoft.com/v1.0";
   const DEMO = new URLSearchParams(location.search).has("demo") || localStorage.getItem("muir.demo") === "1";
+
+  // ---------- Install helper (shown when opened in a browser instead of from the home-screen icon) ----------
+  let deferredInstall = null;
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); deferredInstall = e; renderInstall(); });
+  window.addEventListener("appinstalled", () => { deferredInstall = null; renderInstall(); });
+  function installContext() {
+    const ua = navigator.userAgent;
+    const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+    const ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const inApp = /FBAN|FBAV|Instagram|Line\/|LinkedInApp|GSA\/|Outlook|MicrosoftTeams|; wv\)/i.test(ua) || (ios && !/Safari\//.test(ua));
+    const iosSafari = ios && !inApp && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
+    return { standalone, ios, iosSafari, inApp, android: /Android/.test(ua), mobile: ios || /Android/.test(ua) };
+  }
+  function renderInstall() {
+    const card = document.getElementById("install-card"), body = document.getElementById("install-body"), arrow = document.getElementById("install-arrow");
+    if (!card) return;
+    const c = installContext();
+    if (c.standalone || DEMO && !new URLSearchParams(location.search).has("install")) { card.classList.add("hidden"); arrow.classList.add("hidden"); return; }
+    const share = `<svg class="share" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Share"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>`;
+    const link = location.origin + location.pathname;
+    let html = "";
+    arrow.classList.add("hidden");
+    if (c.inApp) {
+      html = `<p>This opened inside another app. To install it, open it in ${c.ios ? "<strong>Safari</strong>" : "<strong>Chrome</strong>"}:</p>
+        <ol><li>Tap <strong>&#8943;</strong> or the compass icon › <strong>Open in ${c.ios ? "Safari" : "Chrome"}</strong></li><li>Or copy the link and paste it into ${c.ios ? "Safari" : "Chrome"}</li></ol>
+        <button class="btn" id="btn-copy-link" style="width:100%;margin-top:10px">Copy link</button>`;
+    } else if (c.ios) {
+      html = `<ol><li>Tap ${share} <strong>Share</strong> ${c.iosSafari ? "at the bottom of Safari" : "(in the address bar)"}</li>
+        <li>Scroll down and tap <strong>Add to Home Screen</strong></li><li>Tap <strong>Add</strong>, then open <strong>Muir Receipts</strong> from your home screen and sign in there</li></ol>`;
+      if (c.iosSafari) arrow.classList.remove("hidden");
+    } else if (c.android && deferredInstall) {
+      html = `<p>One tap and it's on your home screen.</p><button class="btn primary" id="btn-install" style="width:100%">Install Muir Receipts</button>`;
+    } else if (c.android) {
+      html = `<ol><li>Tap <strong>&#8942;</strong> (top right of Chrome)</li><li>Tap <strong>Install app</strong> or <strong>Add to Home screen</strong></li><li>Open <strong>Muir Receipts</strong> from your home screen</li></ol>`;
+    } else {
+      html = `<p>Open this link on your phone: <strong>${link}</strong></p>`;
+    }
+    body.innerHTML = html; card.classList.remove("hidden");
+    const bi = document.getElementById("btn-install");
+    if (bi) bi.onclick = async () => { deferredInstall.prompt(); await deferredInstall.userChoice.catch(() => null); deferredInstall = null; renderInstall(); };
+    const bc = document.getElementById("btn-copy-link");
+    if (bc) bc.onclick = async () => { try { await navigator.clipboard.writeText(link); bc.textContent = "Copied — now paste it into " + (c.ios ? "Safari" : "Chrome"); } catch (e) { bc.textContent = link; } };
+  }
+  document.addEventListener("DOMContentLoaded", renderInstall);
+  setTimeout(renderInstall, 0);
 
   // ---------- DOM ----------
   const $ = (id) => document.getElementById(id);
