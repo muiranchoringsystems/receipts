@@ -72,7 +72,16 @@
   .toggle { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--line); }
   .toggle:first-of-type { border-top: 0; }
   .radios { display: flex; gap: 10px; margin-bottom: 4px; }
-  select.behalf { border-color: #d97706; box-shadow: 0 0 0 1px #d97706 inset; font-weight: 600; }
+  .picker { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; font: inherit; font-size: 17px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--ink); cursor: pointer; text-align: left; }
+  .picker-change { font-size: 14px; color: var(--muted); white-space: nowrap; }
+  .picker.behalf { border-color: #d97706; box-shadow: 0 0 0 1px #d97706 inset; font-weight: 600; }
+  #belongs-list .chip.on.behalf { background: #d97706; border-color: #d97706; }
+  @media (min-width: 700px) { main { max-width: 640px; width: 100%; margin: 0 auto; } }
+  .admin-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  .admin-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .admin-list li .sub { font-size: 13px; color: var(--muted); }
+  .admin-list li.inactive { opacity: .55; }
+  .admin-list li .edit { font-size: 14px; color: var(--muted); white-space: nowrap; }
   .radio { flex: 1; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--chip); color: var(--ink); font-size: 15px; cursor: pointer; }
   .radio input { width: 20px; height: 20px; margin: 0; accent-color: var(--ok); flex: none; }
   .radio:has(input:checked) { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; font-weight: 600; }
@@ -199,8 +208,9 @@
         <span><strong>To be reimbursed</strong> (paid personally)</span>
         <button class="switch" id="sw-personal" role="switch" aria-checked="false" aria-label="To be reimbursed"></button>
       </div>
-      <label class="field" for="belongs">Whose card or cash paid?</label>
-      <select id="belongs" aria-describedby="belongs-hint"></select>
+      <label class="field" id="belongs-label">Whose card or cash paid?</label>
+      <button type="button" class="picker" id="belongs" aria-labelledby="belongs-label" aria-expanded="false"><span id="belongs-current">Me</span><span class="picker-change">Change ▾</span></button>
+      <div class="chips hidden" id="belongs-list" role="listbox" aria-labelledby="belongs-label" style="margin-top:8px"></div>
       <div class="muted" id="belongs-hint" style="font-size:13px;margin-top:4px">Leave as you unless you're sending this for someone else.</div>
     </div>
     <div class="err hidden" id="send-err"></div>
@@ -220,10 +230,54 @@
     </div>
     <button class="big-btn" id="btn-another">Snap another</button>
   </section>
+  <!-- Cardholders (admins only) -->
+  <section class="screen" id="s-admin">
+    <div class="card" id="admin-main">
+      <h2 style="margin:0 0 2px;font-size:20px">Cardholders</h2>
+      <p class="muted" id="admin-meta" style="font-size:13px;margin:0 0 12px"></p>
+      <ul class="admin-list" id="admin-list"></ul>
+      <button class="btn" id="btn-admin-add" style="width:100%;margin-top:12px">+ Add a cardholder</button>
+      <label class="field" for="ad-admins" style="margin-top:18px">Who can edit this list (one email per line)</label>
+      <textarea id="ad-admins" rows="3" autocomplete="off"></textarea>
+      <div class="err hidden" id="admin-err" style="margin-top:10px"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn ghost" id="btn-admin-back">Back</button>
+        <button class="btn primary" id="btn-admin-save-admins">Save editors</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:12px 0 0">Saved to SharePoint › Corporate Cards › Settings › cardholders.json. Everyone's app picks it up next time it opens, and the next receipts run updates the register (new people get their own tab). People are never deleted — switch them to inactive.</p>
+    </div>
+    <div class="card hidden" id="admin-edit">
+      <h2 id="ad-title" style="margin:0 0 10px;font-size:20px">Add a cardholder</h2>
+      <label class="field" for="ad-name">Full name</label>
+      <input type="text" id="ad-name" autocomplete="off" placeholder="e.g. Jordan Lee">
+      <div class="muted hidden" id="ad-name-hint" style="font-size:12px;margin-top:4px">The name can't be changed — it's tied to their register tab and history.</div>
+      <label class="field" for="ad-email">Muir email</label>
+      <input type="text" id="ad-email" autocomplete="off" inputmode="email" placeholder="first.last@muir.com.au">
+      <label class="field" for="ad-last4">Card — last 4 digits</label>
+      <input type="text" id="ad-last4" autocomplete="off" inputmode="numeric" maxlength="4" placeholder="1234">
+      <label class="field">Manager (approves their receipts)</label>
+      <div class="chips" id="ad-manager"></div>
+      <label class="field">Area</label>
+      <div class="chips" id="ad-area"></div>
+      <label class="field">Based in</label>
+      <div class="chips" id="ad-state"></div>
+      <label class="field" for="ad-other">Other emails they send receipts from (personal, partner — one per line)</label>
+      <textarea id="ad-other" rows="2" autocomplete="off" placeholder="optional"></textarea>
+      <div class="toggle">
+        <span><strong>Active</strong> (has a Muir card now)</span>
+        <button class="switch on" id="ad-active" role="switch" aria-checked="true" aria-label="Active"></button>
+      </div>
+      <div class="err hidden" id="ad-err"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn ghost" id="btn-ad-cancel">Cancel</button>
+        <button class="btn primary" id="btn-ad-save">Save</button>
+      </div>
+    </div>
+  </section>
 </main>
 
 <footer>
-  <span id="version">Muir Receipts</span> · <a href="#" id="btn-signout">Sign out</a>
+  <span id="version">Muir Receipts</span><span id="admin-link" class="hidden"> · <a href="#" id="btn-admin">Cardholders</a></span> · <a href="#" id="btn-signout">Sign out</a>
 </footer>
 
 <script src="msal-browser.min.js"></script>

@@ -5,7 +5,7 @@
    Demo mode (?demo=1): no sign-in, uploads are simulated — for previews and UI testing. */
 (() => {
   "use strict";
-  const APP_VERSION = "0.4.5";
+  const APP_VERSION = "0.5.0";
   const CFG = window.MUIR_CONFIG || {};
   // v0.4.1 lists live here (not in config.js) so the deployed config.js with the real clientId stays untouched.
   const APP_LISTS = {
@@ -50,6 +50,9 @@
   };
 
   const GRAPH = "https://graph.microsoft.com/v1.0";
+  // Cardholder list: SharePoint › 13_Accounting › Corporate Cards › Settings › cardholders.json (schema muir-cardholders/1).
+  // Edited on the Cardholders screen (admins only); everyone's app reads it at start; the receipts run syncs it to the register.
+  const CARDHOLDERS_FILE_ID = "01NLAK5FAOAGJV3WVO4FHZMN4CUWKLZWOL";
   const DEMO = new URLSearchParams(location.search).has("demo") || localStorage.getItem("muir.demo") === "1";
 
   // ---------- Install helper (shown when opened in a browser instead of from the home-screen icon) ----------
@@ -99,7 +102,7 @@
 
   // ---------- DOM ----------
   const $ = (id) => document.getElementById(id);
-  const screens = { signin: $("s-signin"), capture: $("s-capture"), details: $("s-details"), done: $("s-done") };
+  const screens = { signin: $("s-signin"), capture: $("s-capture"), details: $("s-details"), done: $("s-done"), admin: $("s-admin") };
   const el = {
     who: $("who"), version: $("version"), btnSignin: $("btn-signin"), signinErr: $("signin-err"),
     btnCamera: $("btn-camera"), btnGallery: $("btn-gallery"), btnFile: $("btn-file"),
@@ -109,7 +112,7 @@
     attendeesWrap: $("attendees-wrap"), attendees: $("attendees"), nMuir: $("n-muir"), nClients: $("n-clients"),
     currencies: $("currencies"),
     projectWrap: $("project-wrap"), project: $("project"), projectList: $("project-list"),
-    swPersonal: $("sw-personal"), payCard: $("pay-card"), payCash: $("pay-cash"), belongs: $("belongs"), belongsHint: $("belongs-hint"),
+    swPersonal: $("sw-personal"), payCard: $("pay-card"), payCash: $("pay-cash"), belongs: $("belongs"), belongsCurrent: $("belongs-current"), belongsList: $("belongs-list"), belongsHint: $("belongs-hint"),
     sendErr: $("send-err"), btnBack: $("btn-back"), btnSend: $("btn-send"), btnLater: $("btn-later"),
     tofinishCard: $("tofinish-card"), tofinish: $("tofinish"),
     doneTitle: $("done-title"), doneText: $("done-text"), btnAnother: $("btn-another"), btnSignout: $("btn-signout"),
@@ -123,7 +126,7 @@
     lists: { ...structuredClone(CFG.defaults || {}), ...APP_LISTS },
     files: [],                     // [{ name, type, blob, previewUrl, kind: 'image'|'pdf' }]
     expenseType: null, currency: null,
-    personal: false, cash: false,
+    personal: false, cash: false, belongs: "",
     sending: false,
     finishing: null,             // draft being completed: { prefix, files: [names], meta }
   };
@@ -362,26 +365,178 @@
     el.attendeesWrap.classList.toggle("hidden", !needAttendees);
   }
   function setSwitch(btn, on) { btn.classList.toggle("on", on); btn.setAttribute("aria-checked", String(on)); }
+  // ---------- Cardholder list (shared, in SharePoint) ----------
+  const lc = (x) => String(x || "").trim().toLowerCase();
+  function applyCardholders(doc) {
+    state.chDoc = doc;
+    state.lists.cardholders = (doc.cardholders || []).filter((c) => c.active !== false && c.email)
+      .map((c) => ({ name: c.name, upn: lc(c.email) })).sort((a, b) => a.name.localeCompare(b.name));
+    state.isAdmin = !!state.user && (doc.admins || []).map(lc).includes(lc(state.user.upn));
+    $("admin-link").classList.toggle("hidden", !state.isAdmin);
+    renderBelongs(state.belongs || null);
+  }
+  function builtInDoc() {
+    return { schema: "muir-cardholders/1", admins: DEMO ? ["demo@muir.com.au"] : [], builtIn: true,
+      areas: ["Management & Admin", "Sales", "Sales International", "Operations"], states: ["TAS", "QLD", "NSW", "VIC", "SA", "WA", "NT", "ACT", "Overseas"],
+      cardholders: APP_LISTS.cardholders.map((c) => ({ name: c.name, email: c.upn, card_last4: "", manager: "", area: "", state: "", other_emails: [], active: true })) };
+  }
+  async function loadCardholders() {
+    if (DEMO) { applyCardholders(state.chDoc && !state.chDoc.builtIn ? state.chDoc : { ...builtInDoc(), builtIn: false }); state.chEtag = "demo"; return; }
+    try {
+      const meta = await (await graph(`/drives/${CFG.driveId}/items/${CARDHOLDERS_FILE_ID}?select=id,eTag,lastModifiedDateTime`)).json();
+      const doc = await (await graph(`/drives/${CFG.driveId}/items/${CARDHOLDERS_FILE_ID}/content`, { cache: "no-store" })).json();
+      if (doc.schema !== "muir-cardholders/1" || !Array.isArray(doc.cardholders)) throw new Error("unexpected file");
+      state.chEtag = meta.eTag;
+      try { localStorage.setItem("muir.cardholders", JSON.stringify(doc)); } catch (_) {}
+      applyCardholders(doc);
+    } catch (e) {
+      console.warn("Cardholder list not loaded:", e.message);
+      let cached = null; try { cached = JSON.parse(localStorage.getItem("muir.cardholders") || "null"); } catch (_) {}
+      applyCardholders(cached || builtInDoc());
+      state.chEtag = null;                              // can't save without a fresh copy
+    }
+  }
+  async function saveCardholders(doc) {
+    doc.updated_at = new Date().toISOString(); doc.updated_by = state.user.upn;
+    if (DEMO) { await sleep(300); applyCardholders(doc); return; }
+    if (!state.chEtag) throw new Error("The list couldn't be loaded from SharePoint, so it can't be saved. Check your connection and reopen the app.");
+    const body = JSON.stringify(doc, null, 2);
+    try {
+      const r = await graph(`/drives/${CFG.driveId}/items/${CARDHOLDERS_FILE_ID}/content`, {
+        method: "PUT", headers: { "Content-Type": "application/json", "If-Match": state.chEtag }, body });
+      const j = await r.json(); state.chEtag = j.eTag || state.chEtag;
+    } catch (e) {
+      if (/Graph 412/.test(e.message)) { await loadCardholders(); throw new Error("Someone else changed the list just now. It has been reloaded — please make your change again."); }
+      if (/Graph 403|Graph 401/.test(e.message)) throw new Error("SharePoint says you can't edit the cardholder list. Ask Max for edit access to Corporate Cards › Settings.");
+      throw e;
+    }
+    try { localStorage.setItem("muir.cardholders", JSON.stringify(doc)); } catch (_) {}
+    applyCardholders(doc);
+  }
+
+  // ---------- Cardholders screen (admins) ----------
+  const ad = { editing: null, manager: "", area: "", st: "", active: true };
+  function adminErr(id, msg) { const x = $(id); x.textContent = msg || ""; x.classList.toggle("hidden", !msg); }
+  function renderAdmin() {
+    const doc = state.chDoc || builtInDoc();
+    const list = $("admin-list"); list.innerHTML = "";
+    const people = (doc.cardholders || []).slice().sort((a, b) => (b.active !== false) - (a.active !== false) || a.name.localeCompare(b.name));
+    people.forEach((c) => {
+      const li = document.createElement("li"); if (c.active === false) li.className = "inactive";
+      const left = document.createElement("div");
+      const n = document.createElement("div"); n.textContent = c.name + (c.active === false ? " (inactive)" : ""); n.style.fontWeight = "600";
+      const sub = document.createElement("div"); sub.className = "sub";
+      sub.textContent = [c.card_last4 ? "Card ••" + c.card_last4 : "no card digits", c.manager ? "Mgr " + c.manager.split(" ")[0] : "", c.area, c.state].filter(Boolean).join(" · ");
+      left.append(n, sub);
+      const e = document.createElement("span"); e.className = "edit"; e.textContent = "Edit ›";
+      li.append(left, e); li.onclick = () => openAdminEdit(c.name);
+      list.appendChild(li);
+    });
+    const when = doc.updated_at ? new Date(doc.updated_at).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" }) : "";
+    $("admin-meta").textContent = doc.builtIn ? "Showing the built-in list — the SharePoint file couldn't be read." :
+      `${people.filter((c) => c.active !== false).length} active · last changed ${when}${doc.updated_by ? " by " + String(doc.updated_by).split(" ")[0] : ""}`;
+    $("ad-admins").value = (doc.admins || []).join("\n");
+    adminErr("admin-err", "");
+    $("admin-main").classList.remove("hidden"); $("admin-edit").classList.add("hidden");
+  }
+  function chipRow(id, options, current, onPick) {
+    const box = $(id); box.innerHTML = "";
+    ["", ...options].forEach((o) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "chip" + (current === o ? " on" : "");
+      b.textContent = o || "—"; b.onclick = () => { onPick(o); chipRow(id, options, o, onPick); };
+      box.appendChild(b);
+    });
+  }
+  function openAdminEdit(name) {
+    const doc = state.chDoc || builtInDoc();
+    const c = name ? doc.cardholders.find((x) => x.name === name) : null;
+    ad.editing = c ? c.name : null;
+    ad.manager = c ? c.manager || "" : ""; ad.area = c ? c.area || "" : ""; ad.st = c ? c.state || "" : ""; ad.active = c ? c.active !== false : true;
+    $("ad-title").textContent = c ? c.name : "Add a cardholder";
+    $("ad-name").value = c ? c.name : ""; $("ad-name").readOnly = !!c; $("ad-name-hint").classList.toggle("hidden", !c);
+    $("ad-email").value = c ? c.email || "" : ""; $("ad-last4").value = c ? c.card_last4 || "" : "";
+    $("ad-other").value = c ? (c.other_emails || []).join("\n") : "";
+    const others = doc.cardholders.filter((x) => x.active !== false && x.name !== (c && c.name)).map((x) => x.name);
+    chipRow("ad-manager", others, ad.manager, (v) => (ad.manager = v));
+    chipRow("ad-area", doc.areas || [], ad.area, (v) => (ad.area = v));
+    chipRow("ad-state", doc.states || [], ad.st, (v) => (ad.st = v));
+    setSwitch($("ad-active"), ad.active);
+    adminErr("ad-err", "");
+    $("admin-main").classList.add("hidden"); $("admin-edit").classList.remove("hidden");
+    window.scrollTo(0, 0);
+  }
+  async function saveAdminEdit() {
+    const doc = JSON.parse(JSON.stringify(state.chDoc || builtInDoc())); delete doc.builtIn;
+    const name = $("ad-name").value.trim().replace(/\s+/g, " ");
+    const email = lc($("ad-email").value);
+    const last4 = $("ad-last4").value.trim();
+    const other = $("ad-other").value.split(/[\s,;]+/).map(lc).filter(Boolean);
+    const rest = doc.cardholders.filter((x) => x.name !== ad.editing);
+    const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    let err = null;
+    if (!/^[A-Za-zÀ-ÿ'’.-]+( [A-Za-zÀ-ÿ'’.-]+)+$/.test(name)) err = "Enter their full name (first and last).";
+    else if (!ad.editing && rest.some((x) => lc(x.name) === lc(name))) err = `${name} is already on the list.`;
+    else if (!/^[^@\s]+@muir\.com\.au$/.test(email)) err = "Their Muir email should end in @muir.com.au.";
+    else if (rest.some((x) => lc(x.email) === email)) err = "Another cardholder already has that email.";
+    else if (ad.active && !/^\d{4}$/.test(last4)) err = "Card last 4 digits: four numbers, as on the NAB statement.";
+    else if (last4 && rest.some((x) => x.active !== false && x.card_last4 === last4)) err = `Card ••${last4} already belongs to ${rest.find((x) => x.active !== false && x.card_last4 === last4).name}.`;
+    else if (other.some((o) => !emailRe.test(o))) err = "One of the other emails doesn't look like an email address.";
+    else if (other.some((o) => o.endsWith("@muir.com.au"))) err = "Other emails are for non-Muir addresses (personal, partner).";
+    else if (other.some((o) => rest.some((x) => (x.other_emails || []).map(lc).includes(o)))) err = "One of those other emails is already listed under someone else.";
+    if (err) { adminErr("ad-err", err); return; }
+    const rec = { name, email, card_last4: last4, manager: ad.manager, area: ad.area, state: ad.st, other_emails: other, active: ad.active };
+    if (ad.editing) doc.cardholders = doc.cardholders.map((x) => (x.name === ad.editing ? { ...x, ...rec } : x));
+    else doc.cardholders.push(rec);
+    $("btn-ad-save").disabled = true;
+    try { await saveCardholders(doc); renderAdmin(); }
+    catch (e) { adminErr("ad-err", e.message); }
+    finally { $("btn-ad-save").disabled = false; }
+  }
+  async function saveAdmins() {
+    const doc = JSON.parse(JSON.stringify(state.chDoc || builtInDoc())); delete doc.builtIn;
+    const list = $("ad-admins").value.split(/[\s,;]+/).map(lc).filter(Boolean);
+    if (!list.includes(lc(state.user.upn))) { adminErr("admin-err", "Keep yourself on the list, or you'll lock yourself out of this screen."); return; }
+    if (list.some((x) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x))) { adminErr("admin-err", "One of those isn't an email address."); return; }
+    doc.admins = list;
+    try { await saveCardholders(doc); renderAdmin(); adminErr("admin-err", ""); }
+    catch (e) { adminErr("admin-err", e.message); }
+  }
+  async function openAdmin() { show("admin"); $("admin-meta").textContent = "Loading…"; await loadCardholders(); renderAdmin(); }
+
   // ---------- Whose card or cash (default: me) ----------
+  // Custom picker (not a native <select>: its pop-up list rendered blank in desktop Chrome on Windows).
   function renderBelongs(selectedUpn) {
     if (!el.belongs || !state.user) return;
     const me = (state.user.upn || "").toLowerCase();
     const others = (state.lists.cardholders || []).filter((c) => c.upn.toLowerCase() !== me);
-    el.belongs.innerHTML = "";
-    const add = (value, label) => { const o = document.createElement("option"); o.value = value; o.textContent = label; el.belongs.appendChild(o); };
+    state.belongs = selectedUpn && others.some((c) => c.upn === selectedUpn) ? selectedUpn : "";
+    el.belongsList.innerHTML = "";
+    const add = (value, label) => {
+      const b = document.createElement("button"); b.type = "button"; b.setAttribute("role", "option");
+      const on = state.belongs === value;
+      b.className = "chip" + (on ? " on" : "") + (on && value ? " behalf" : ""); b.setAttribute("aria-selected", String(on));
+      b.textContent = label;
+      b.onclick = () => { renderBelongs(value); toggleBelongsList(false); };
+      el.belongsList.appendChild(b);
+    };
     add("", `Me (${state.user.name})`);
     others.forEach((c) => add(c.upn, c.name));
-    el.belongs.value = selectedUpn && others.some((c) => c.upn === selectedUpn) ? selectedUpn : "";
     updateBelongsHint();
   }
+  function toggleBelongsList(open) {
+    const show = open === undefined ? el.belongsList.classList.contains("hidden") : open;
+    el.belongsList.classList.toggle("hidden", !show); el.belongs.setAttribute("aria-expanded", String(show));
+    el.belongs.querySelector(".picker-change").textContent = show ? "Close ▴" : "Change ▾";
+  }
   function belongsTo() {
-    const v = el.belongs ? el.belongs.value : "";
+    const v = state.belongs || "";
     const c = v && (state.lists.cardholders || []).find((x) => x.upn === v);
     return c ? { name: c.name, upn: c.upn, onBehalf: true } : { name: state.user.name, upn: state.user.upn, onBehalf: false };
   }
   function updateBelongsHint() {
     const b = belongsTo();
     el.belongs.classList.toggle("behalf", b.onBehalf);
+    el.belongsCurrent.textContent = b.onBehalf ? b.name : `Me (${state.user.name})`;
     el.belongsHint.textContent = b.onBehalf ? `Sent by you for ${b.name} — it goes on ${b.name.split(" ")[0]}'s list${state.cash ? " and any reimbursement is theirs" : ""}.`
                                             : "Leave as you unless you're sending this for someone else.";
   }
@@ -389,7 +544,7 @@
     state.files.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl));
     state.files = []; state.expenseType = null; state.personal = false; state.cash = false; state.currency = null; state.finishing = null;
     el.reason.value = ""; el.attendees.value = ""; el.project.value = ""; el.nMuir.value = ""; el.nClients.value = "";
-    setSwitch(el.swPersonal, false); el.payCard.checked = true; el.payCash.checked = false; renderBelongs(null);
+    setSwitch(el.swPersonal, false); el.payCard.checked = true; el.payCash.checked = false; renderBelongs(null); toggleBelongsList(false);
     el.sendErr.classList.add("hidden");
     [el.inCamera, el.inGallery, el.inFile].forEach((i) => (i.value = ""));
     renderTypes(); renderCurrencies(); updateConditional(); updateReasonPreview();
@@ -451,7 +606,7 @@
       captured_at: fin0 && fin0.captured_at ? fin0.captured_at : new Date().toISOString(),
       files: state.files.map((f) => ({ type: f.type, blob: f.blob, kind: f.kind })), pages: state.files.length,
       fields: { expenseType: state.expenseType, reason: el.reason.value, currency: state.currency, cash: state.cash, personal: state.personal,
-                attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value, belongs: el.belongs.value },
+                attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value, belongs: state.belongs || "" },
     };
     await draftPut(draft);
     askNotifyPermission();   // needed for the icon badge on iPhone; asked once, on this tap
@@ -634,7 +789,16 @@
   // Paid with: Muir credit card (default) or Cash. Cash was paid personally, so it switches "To be reimbursed" on (can be turned off).
   el.payCard.onchange = () => { if (el.payCard.checked) { state.cash = false; } updateBelongsHint(); };
   el.payCash.onchange = () => { if (el.payCash.checked) { state.cash = true; state.personal = true; setSwitch(el.swPersonal, true); } updateBelongsHint(); };
-  el.belongs.onchange = updateBelongsHint;
+  el.belongs.onclick = () => toggleBelongsList();
+  $("btn-admin").onclick = (e) => { e.preventDefault(); openAdmin(); };
+  $("btn-admin-back").onclick = () => show("capture");
+  $("btn-admin-add").onclick = () => openAdminEdit(null);
+  $("btn-admin-save-admins").onclick = saveAdmins;
+  $("btn-ad-cancel").onclick = renderAdmin;
+  $("btn-ad-save").onclick = saveAdminEdit;
+  $("ad-active").onclick = () => { ad.active = !ad.active; setSwitch($("ad-active"), ad.active); };
+  ["ad-name", "ad-email", "ad-last4", "ad-other"].forEach((id) => $(id).addEventListener("input", () => adminErr("ad-err", "")));
+  $("ad-last4").oninput = (e) => { e.target.value = e.target.value.replace(/\D/g, "").slice(0, 4); };
   el.btnBack.onclick = () => { if (state.finishing) { resetForm(); el.btnLater.classList.remove("hidden"); el.btnSend.textContent = "Send to finance"; } show("capture"); };
   el.btnSend.onclick = send;
   el.btnLater.onclick = sendLater;
@@ -653,6 +817,7 @@
     if (!(await ensureSignedIn())) return;   // redirecting to Microsoft; app reloads after
     el.who.textContent = state.user.name;
     await loadRemoteConfig();
+    await loadCardholders();
     renderTypes(); renderCurrencies(); updateConditional(); renderRecent(); setNet(); refreshQueueBanner(); renderDrafts(); remindDrafts();
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { renderDrafts(); remindDrafts(); } });
     show("capture");
@@ -660,5 +825,5 @@
   })();
 
   // Exposed for tests / console
-  window.__muir = { state, normaliseImage, buildSubmission, queueAll, flushQueue, draftsAll, APP_VERSION };
+  window.__muir = { state, loadCardholders, openAdmin, normaliseImage, buildSubmission, queueAll, flushQueue, draftsAll, APP_VERSION };
 })();

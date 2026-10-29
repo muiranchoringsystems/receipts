@@ -1,6 +1,6 @@
 /* Muir Receipts service worker — caches the app shell so the icon opens instantly and offline.
    Network calls to Microsoft (login, Graph) are never cached. Bump CACHE on each release. */
-const CACHE = "muir-receipts-v0.4.5";
+const CACHE = "muir-receipts-v0.5.0";
 const SHELL = ["./", "./index.html", "./app.js", "./config.js", "./msal-browser.min.js", "./manifest.webmanifest",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png"];
 
