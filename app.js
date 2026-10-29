@@ -5,7 +5,7 @@
    Demo mode (?demo=1): no sign-in, uploads are simulated — for previews and UI testing. */
 (() => {
   "use strict";
-  const APP_VERSION = "0.4.2";
+  const APP_VERSION = "0.4.3";
   const CFG = window.MUIR_CONFIG || {};
   // v0.4.1 lists live here (not in config.js) so the deployed config.js with the real clientId stays untouched.
   const APP_LISTS = {
