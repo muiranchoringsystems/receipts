@@ -5,8 +5,36 @@
    Demo mode (?demo=1): no sign-in, uploads are simulated — for previews and UI testing. */
 (() => {
   "use strict";
-  const APP_VERSION = "0.3.2";
+  const APP_VERSION = "0.4.2";
   const CFG = window.MUIR_CONFIG || {};
+  // v0.4.1 lists live here (not in config.js) so the deployed config.js with the real clientId stays untouched.
+  const APP_LISTS = {
+      // What the person paying can answer. The review maps each option to a Zoho GL using the cardholder's
+      // area/state (Lookups) and domestic/overseas — see project doc 44. Keep names in step with Lookups › App types.
+      expenseTypes: [
+        "Flights", "Accommodation", "Taxi, rideshare, parking, tolls", "Meals while travelling",
+        "Entertainment – staff only", "Entertainment – with clients",
+        "Vehicle – fuel", "Vehicle – repairs, rego, other",
+        "Software & IT", "Phone & internet", "Office, printing, postage, freight",
+        "Tools, consumables, equipment", "Repairs, maintenance, hire",
+        "Marketing & trade shows", "Training & courses", "Professional services",
+        "Staff amenities & recruitment", "R&D", "Personal – card used by mistake", "Other"
+      ],
+      // Added to the end of the reason so it reads e.g. "Taxi to airport – travel"
+      typeSuffix: {
+        "Flights": "travel", "Accommodation": "travel", "Taxi, rideshare, parking, tolls": "travel", "Meals while travelling": "travel meal",
+        "Entertainment – staff only": "staff entertainment", "Entertainment – with clients": "client entertainment",
+        "Vehicle – fuel": "vehicle fuel", "Vehicle – repairs, rego, other": "vehicle",
+        "Software & IT": "IT", "Phone & internet": "phone/internet", "Office, printing, postage, freight": "office",
+        "Tools, consumables, equipment": "tools & consumables", "Repairs, maintenance, hire": "repairs & maintenance",
+        "Marketing & trade shows": "marketing", "Training & courses": "training", "Professional services": "professional services",
+        "Staff amenities & recruitment": "staff costs", "R&D": "R&D", "Personal – card used by mistake": "personal, to repay", "Other": "other"
+      },
+      // Types that ask how many Muir staff and clients (FBT)
+      attendeeTypes: ["Entertainment – staff only", "Entertainment – with clients", "Meals while travelling"],
+    reasonPlaceholder: "e.g. Taxi to airport, Dinner with Onboard Marine — who was there if paying for others",
+  };
+
   const GRAPH = "https://graph.microsoft.com/v1.0";
   const DEMO = new URLSearchParams(location.search).has("demo") || localStorage.getItem("muir.demo") === "1";
 
@@ -18,11 +46,11 @@
     btnCamera: $("btn-camera"), btnGallery: $("btn-gallery"), btnFile: $("btn-file"),
     inCamera: $("in-camera"), inGallery: $("in-gallery"), inFile: $("in-file"),
     queueBanner: $("queue-banner"), netStatus: $("net-status"), recent: $("recent"),
-    thumbs: $("thumbs"), types: $("types"), reason: $("reason"),
+    thumbs: $("thumbs"), types: $("types"), reason: $("reason"), reasonPreview: $("reason-preview"),
     attendeesWrap: $("attendees-wrap"), attendees: $("attendees"), nMuir: $("n-muir"), nClients: $("n-clients"),
     currencies: $("currencies"),
     projectWrap: $("project-wrap"), project: $("project"), projectList: $("project-list"),
-    swPersonal: $("sw-personal"), swCash: $("sw-cash"), payLabel: $("pay-label"),
+    swPersonal: $("sw-personal"), payCard: $("pay-card"), payCash: $("pay-cash"),
     sendErr: $("send-err"), btnBack: $("btn-back"), btnSend: $("btn-send"), btnLater: $("btn-later"),
     tofinishCard: $("tofinish-card"), tofinish: $("tofinish"),
     doneTitle: $("done-title"), doneText: $("done-text"), btnAnother: $("btn-another"), btnSignout: $("btn-signout"),
@@ -33,9 +61,9 @@
   const state = {
     account: null,                 // MSAL account
     user: null,                    // { name, upn }
-    lists: structuredClone(CFG.defaults || {}),
+    lists: { ...structuredClone(CFG.defaults || {}), ...APP_LISTS },
     files: [],                     // [{ name, type, blob, previewUrl, kind: 'image'|'pdf' }]
-    expenseType: null, currency: "AUD",
+    expenseType: null, currency: null,
     personal: false, cash: false,
     sending: false,
     finishing: null,             // draft being completed: { prefix, files: [names], meta }
@@ -245,7 +273,7 @@
     if (lastUsed && types.includes(lastUsed)) { types.splice(types.indexOf(lastUsed), 1); types.unshift(lastUsed); }
     types.forEach((t) => {
       const b = document.createElement("button"); b.type = "button"; b.className = "chip" + (state.expenseType === t ? " on" : ""); b.textContent = t;
-      b.onclick = () => { state.expenseType = t; renderTypes(); updateConditional(); };
+      b.onclick = () => { state.expenseType = t; renderTypes(); updateConditional(); updateReasonPreview(); };
       el.types.appendChild(b);
     });
     el.reason.placeholder = state.lists.reasonPlaceholder || el.reason.placeholder;
@@ -262,6 +290,13 @@
       el.currencies.appendChild(b);
     });
   }
+  // Reason = what the person typed + " – " + a short word for the type, e.g. "Taxi to airport – travel"
+  function typeSuffix() { const m = state.lists.typeSuffix || {}; return state.expenseType ? (m[state.expenseType] || state.expenseType.toLowerCase()) : ""; }
+  function fullReason() { const t = el.reason.value.trim(); const s = typeSuffix(); return t ? (s && !t.toLowerCase().endsWith(s.toLowerCase()) ? `${t} – ${s}` : t) : ""; }
+  function updateReasonPreview() {
+    const t = el.reason.value.trim(), s = typeSuffix();
+    el.reasonPreview.textContent = s ? (t ? `Sends as: \u201c${fullReason()}\u201d` : `Type what it was for — \u201c– ${s}\u201d is added for you`) : "";
+  }
   function updateConditional() {
     const needAttendees = (state.lists.attendeeTypes || []).includes(state.expenseType);
     el.attendeesWrap.classList.toggle("hidden", !needAttendees);
@@ -269,17 +304,18 @@
   function setSwitch(btn, on) { btn.classList.toggle("on", on); btn.setAttribute("aria-checked", String(on)); }
   function resetForm() {
     state.files.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl));
-    state.files = []; state.expenseType = null; state.personal = false; state.cash = false; state.currency = "AUD"; state.finishing = null;
+    state.files = []; state.expenseType = null; state.personal = false; state.cash = false; state.currency = null; state.finishing = null;
     el.reason.value = ""; el.attendees.value = ""; el.project.value = ""; el.nMuir.value = ""; el.nClients.value = "";
-    setSwitch(el.swPersonal, false); setSwitch(el.swCash, false); el.payLabel.textContent = "Credit Card";
+    setSwitch(el.swPersonal, false); el.payCard.checked = true; el.payCash.checked = false;
     el.sendErr.classList.add("hidden");
     [el.inCamera, el.inGallery, el.inFile].forEach((i) => (i.value = ""));
-    renderTypes(); renderCurrencies(); updateConditional();
+    renderTypes(); renderCurrencies(); updateConditional(); updateReasonPreview();
   }
   function validate() {
     if (!state.files.length) return "Add at least one photo or PDF.";
     if (!state.expenseType) return "Pick an expense type.";
-    if (el.reason.value.trim().length < 3) return "A short reason is required — finance will chase you for it otherwise.";
+    if (el.reason.value.trim().length < 3) return "Say what it was for (e.g. \u201cTaxi to airport\u201d) — finance will chase you for it otherwise.";
+    if (!state.currency) return "Pick the currency shown on the receipt.";
     if (!el.attendeesWrap.classList.contains("hidden") && !(Number(el.nMuir.value) + Number(el.nClients.value) > 0)) return "How many Muir employees and clients? (needed for FBT).";
     return null;
   }
@@ -292,16 +328,19 @@
   function buildSubmission(status = "complete") {
     const now = new Date();
     const local = (state.user.upn.split("@")[0] || "user").replace(/[^a-z0-9._-]/gi, "").toLowerCase();
-    const fin = state.finishing;
-    const prefix = fin ? fin.prefix : `${stamp(now)}_${local}`;
+    const fin0 = state.finishing;
+    const localDraft = !!(fin0 && fin0.local);       // saved on the phone only — nothing uploaded yet
+    const fin = localDraft ? null : fin0;              // legacy (pre-0.4) drafts: photo already uploaded, send meta only
+    const prefix = fin0 ? fin0.prefix : `${stamp(now)}_${local}`;
     const files = fin ? [] : state.files.map((f, i) => ({ name: `${prefix}_${i + 1}${f.kind === "pdf" ? ".pdf" : ".jpg"}`, type: f.type, blob: f.blob }));
     const fileNames = fin ? fin.files : files.map((f) => f.name);
     const meta = {
       schema: "muir-receipt/2", app: `muir-receipts-pwa ${APP_VERSION}`, status,
       submitted_by: { name: state.user.name, upn: state.user.upn },
-      captured_at: fin ? fin.meta.captured_at : now.toISOString(), details_at: status === "complete" ? now.toISOString() : null,
+      captured_at: fin ? fin.meta.captured_at : localDraft ? fin0.captured_at : now.toISOString(), details_at: status === "complete" ? now.toISOString() : null,
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      expense_type: state.expenseType, reason: el.reason.value.trim() || null,
+      expense_type: state.expenseType, reason: fullReason() || null, reason_text: el.reason.value.trim() || null,
+      currency_selected_by_user: !!state.currency,
       attendees: el.attendeesWrap.classList.contains("hidden") ? null : (el.attendees.value.trim() || null),
       n_muir_employees: el.attendeesWrap.classList.contains("hidden") ? null : Number(el.nMuir.value || 0),
       n_clients: el.attendeesWrap.classList.contains("hidden") ? null : Number(el.nClients.value || 0),
@@ -318,28 +357,39 @@
     // Uploaded last so its presence marks the set complete; a details-later completion replaces the pending meta.
     await uploadFile(`${sub.prefix}_meta.json`, metaBlob, sub.metaOnly ? "replace" : "rename");
   }
-  // ---- "No time now": send the photo immediately with status pending_details, keep a local draft to finish ----
+  // ---- "No time now": keep the photo ON THE PHONE (nothing is sent) until a reason is added ----
   async function sendLater() {
     if (!state.files.length) { el.sendErr.textContent = "Add at least one photo or PDF."; el.sendErr.classList.remove("hidden"); return; }
-    if (state.sending) return;
-    state.sending = true; el.btnLater.disabled = true; el.btnLater.innerHTML = `<span class="spinner"></span> Sending photo…`;
-    const sub = buildSubmission("pending_details");
-    const draft = { prefix: sub.prefix, files: sub.files.map((f) => f.name), meta: sub.meta,
-      thumb: state.files[0].kind === "image" ? state.files[0].blob : null, pages: state.files.length };
-    await queuePut(sub); await draftPut(draft);   // saved on the phone first
-    inflight.add(sub.id);
-    try {
-      if (!navigator.onLine) throw new Error("offline");
-      await transmit(sub); await queueDel(sub.id); addRecent(sub, "sent");
-    } catch (e) { addRecent(sub, "queued"); }
-    finally { inflight.delete(sub.id); }
-    state.sending = false; el.btnLater.disabled = false; el.btnLater.textContent = "No time now — send photo, add details later";
-    resetForm(); refreshQueueBanner(); renderDrafts();
-    showDone("Photo sent — details later", "It's in your To finish list on the home screen. Finance can see the receipt now; the reason and type are still needed.");
+    const local = (state.user.upn.split("@")[0] || "user").replace(/[^a-z0-9._-]/gi, "").toLowerCase();
+    const fin0 = state.finishing;
+    const draft = {
+      prefix: fin0 ? fin0.prefix : `${stamp()}_${local}`, local: true,
+      captured_at: fin0 && fin0.captured_at ? fin0.captured_at : new Date().toISOString(),
+      files: state.files.map((f) => ({ type: f.type, blob: f.blob, kind: f.kind })), pages: state.files.length,
+      fields: { expenseType: state.expenseType, reason: el.reason.value, currency: state.currency, cash: state.cash, personal: state.personal,
+                attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value },
+    };
+    await draftPut(draft);
+    askNotifyPermission();   // needed for the icon badge on iPhone; asked once, on this tap
+    resetForm(); renderDrafts();
+    showDone("Saved on your phone — not sent", "It's at the top of the home screen under \u201cNot sent yet\u201d, and the app icon shows a count until it's done. Add the reason and it sends.");
   }
   async function openDraft(prefix) {
     const d = (await draftsAll()).find((x) => x.prefix === prefix); if (!d) return;
     resetForm();
+    if (d.local) {
+      state.finishing = { prefix: d.prefix, captured_at: d.captured_at, local: true };
+      state.files = d.files.map((f) => ({ ...f, previewUrl: f.kind === "image" ? URL.createObjectURL(f.blob) : null }));
+      const x = d.fields || {};
+      state.expenseType = x.expenseType || null; state.cash = !!x.cash; state.personal = !!x.personal;
+      el.reason.value = x.reason || ""; el.attendees.value = x.attendees || ""; el.nMuir.value = x.nMuir || ""; el.nClients.value = x.nClients || ""; el.project.value = x.project || "";
+      el.payCash.checked = state.cash; el.payCard.checked = !state.cash; setSwitch(el.swPersonal, state.personal);
+      state.currency = x.currency || null;
+      renderThumbs(); renderTypes(); renderCurrencies(); updateConditional(); updateReasonPreview();
+      el.btnSend.textContent = "Send to finance";
+      show("details"); setTimeout(() => el.reason.focus(), 200);
+      return;
+    }
     state.finishing = { prefix: d.prefix, files: d.files, meta: d.meta };
     state.files = d.thumb ? [{ name: d.files[0], type: "image/jpeg", blob: d.thumb, kind: "image", previewUrl: URL.createObjectURL(d.thumb) }] : [{ name: d.files[0], type: "application/pdf", blob: new Blob(), kind: "pdf" }];
     renderThumbs(); el.thumbs.querySelectorAll("button, .add").forEach((x) => x.remove());
@@ -353,6 +403,7 @@
     state.sending = true; el.btnSend.disabled = true; el.btnSend.innerHTML = `<span class="spinner"></span> Sending…`;
     const sub = buildSubmission("complete");
     const wasFinishing = !!state.finishing;
+    const wasLocal = wasFinishing && !!state.finishing.local;
     localStorage.setItem("muir.lastType", state.expenseType);
     await queuePut(sub);              // saved on the phone before any network call
     inflight.add(sub.id);
@@ -361,7 +412,7 @@
       await transmit(sub);
       await queueDel(sub.id);
       addRecent(sub, "sent");
-      showDone(wasFinishing ? "Details sent" : "Sent", `${sub.meta.expense_type} · ${sub.meta.reason}`);
+      showDone(wasFinishing && !wasLocal ? "Details sent" : "Sent", `${sub.meta.expense_type} · ${sub.meta.reason}`);
     } catch (e) {
       addRecent(sub, "queued");
       const why = e.signin ? "Your sign-in has expired — close and reopen the app to sign in; it will then send automatically."
@@ -405,17 +456,41 @@
   async function draftsAll() { const x = await db(); return new Promise((res, rej) => { const r = x.transaction(DRAFTS).objectStore(DRAFTS).getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
   async function draftDel(prefix) { const x = await db(); await new Promise((res, rej) => { const t = x.transaction(DRAFTS, "readwrite"); t.objectStore(DRAFTS).delete(prefix); t.oncomplete = res; t.onerror = () => rej(t.error); }); }
   async function renderDrafts() {
-    const list = (await draftsAll().catch(() => [])).sort((p, q) => (p.meta.captured_at < q.meta.captured_at ? 1 : -1));
+    const at = (d) => d.captured_at || (d.meta && d.meta.captured_at) || "";
+    const list = (await draftsAll().catch(() => [])).sort((p, q) => (at(p) < at(q) ? 1 : -1));
     el.tofinishCard.classList.toggle("hidden", list.length === 0);
+    updateBadge(list.length);
     el.tofinish.innerHTML = "";
     list.forEach((d) => {
       const li = document.createElement("li"); li.style.cursor = "pointer";
-      const when = new Date(d.meta.captured_at).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-      li.innerHTML = `<span>${when} · ${d.pages} page${d.pages > 1 ? "s" : ""}<br><span class="muted">Tap to add type and reason</span></span><span>›</span>`;
+      const when = new Date(at(d)).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+      const hrs = (Date.now() - new Date(at(d)).getTime()) / 36e5;
+      const age = hrs >= 24 ? `${Math.floor(hrs / 24)} day${hrs >= 48 ? "s" : ""} old` : "";
+      li.innerHTML = `<span>${when} · ${d.pages} page${d.pages > 1 ? "s" : ""}${age ? ` · <strong style="color:var(--warn)">${age}</strong>` : ""}<br><span class="muted">${d.local ? "Not sent — tap to add the reason" : "Tap to add type and reason"}</span></span><span>›</span>`;
       li.onclick = () => openDraft(d.prefix);
       el.tofinish.appendChild(li);
     });
   }
+  // App-icon badge = receipts waiting for a reason (iPhone: home-screen app + notifications allowed; Android: installed app)
+  function updateBadge(n) {
+    try { if ("setAppBadge" in navigator) { n ? navigator.setAppBadge(n) : navigator.clearAppBadge(); } } catch (e) { /* unsupported */ }
+  }
+  function askNotifyPermission() {
+    try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch (e) { /* unsupported */ }
+  }
+  // On opening the app, a reminder if anything has been waiting more than 2 hours
+  async function remindDrafts() {
+    const list = (await draftsAll().catch(() => [])).filter((d) => d.local);
+    const old = list.filter((d) => Date.now() - new Date(d.captured_at).getTime() > 2 * 36e5);
+    if (!old.length || !("Notification" in window) || Notification.permission !== "granted") return;
+    const last = Number(localStorage.getItem("muir.lastRemind") || 0);
+    if (Date.now() - last < 6 * 36e5) return;
+    localStorage.setItem("muir.lastRemind", String(Date.now()));
+    const reg = await navigator.serviceWorker?.getRegistration?.();
+    const body = `${old.length} receipt${old.length > 1 ? "s are" : " is"} saved on your phone but not sent — add the reason to send.`;
+    try { reg ? reg.showNotification("Muir Receipts", { body, tag: "muir-drafts", icon: "icons/icon-192.png", badge: "icons/icon-192.png" }) : new Notification("Muir Receipts", { body }); } catch (e) { /* ignore */ }
+  }
+
   let flushing = false;
   const inflight = new Set();
   async function flushQueue() {
@@ -471,10 +546,13 @@
   el.btnFile.onclick = () => el.inFile.click();
   [el.inCamera, el.inGallery, el.inFile].forEach((i) => (i.onchange = () => addFiles(i.files)));
   el.swPersonal.onclick = () => { state.personal = !state.personal; setSwitch(el.swPersonal, state.personal); };
-  el.swCash.onclick = () => { state.cash = !state.cash; setSwitch(el.swCash, state.cash); el.payLabel.textContent = state.cash ? "Cash" : "Credit Card"; };
+  // Paid with: Muir credit card (default) or Cash. Cash was paid personally, so it switches "To be reimbursed" on (can be turned off).
+  el.payCard.onchange = () => { if (el.payCard.checked) { state.cash = false; } };
+  el.payCash.onchange = () => { if (el.payCash.checked) { state.cash = true; state.personal = true; setSwitch(el.swPersonal, true); } };
   el.btnBack.onclick = () => { if (state.finishing) { resetForm(); el.btnLater.classList.remove("hidden"); el.btnSend.textContent = "Send to finance"; } show("capture"); };
   el.btnSend.onclick = send;
   el.btnLater.onclick = sendLater;
+  el.reason.addEventListener("input", updateReasonPreview);
   el.btnAnother.onclick = () => { show("capture"); setTimeout(() => el.inCamera.click(), 50); };
   window.addEventListener("online", setNet); window.addEventListener("offline", setNet);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) flushQueue(); });
@@ -489,7 +567,8 @@
     if (!(await ensureSignedIn())) return;   // redirecting to Microsoft; app reloads after
     el.who.textContent = state.user.name;
     await loadRemoteConfig();
-    renderTypes(); renderCurrencies(); updateConditional(); renderRecent(); setNet(); refreshQueueBanner(); renderDrafts();
+    renderTypes(); renderCurrencies(); updateConditional(); renderRecent(); setNet(); refreshQueueBanner(); renderDrafts(); remindDrafts();
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { renderDrafts(); remindDrafts(); } });
     show("capture");
     flushQueue();
   })();

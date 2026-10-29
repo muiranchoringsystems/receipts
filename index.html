@@ -36,6 +36,8 @@
   .card { background: var(--card); border-radius: var(--radius); padding: var(--pad); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
   h1 { font-size: 20px; margin: 0 0 6px; }
   p.muted { color: var(--muted); margin: 0; font-size: 14px; }
+  .hero { display: block; width: 100%; height: 190px; object-fit: cover; object-position: 50% 42%; border-radius: 16px; margin-bottom: 14px; background: var(--chip); }
+  .hero-tall { height: auto; aspect-ratio: 4 / 3; object-position: center; }
   .big-btn { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%;
     min-height: 120px; border: 0; border-radius: var(--radius); background: var(--navy); color: #fff;
     font-size: 22px; font-weight: 700; cursor: pointer; }
@@ -63,6 +65,10 @@
   textarea { min-height: 72px; resize: vertical; }
   .toggle { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--line); }
   .toggle:first-of-type { border-top: 0; }
+  .radios { display: flex; gap: 10px; margin-bottom: 4px; }
+  .radio { flex: 1; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--chip); color: var(--ink); font-size: 15px; cursor: pointer; }
+  .radio input { width: 20px; height: 20px; margin: 0; accent-color: var(--ok); flex: none; }
+  .radio:has(input:checked) { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; font-weight: 600; }
   .switch { position: relative; width: 50px; height: 30px; border-radius: 15px; background: #cfd6de; border: 0; cursor: pointer; }
   .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; transition: left .15s; }
   .switch.on { background: var(--ok); }
@@ -105,6 +111,7 @@
 <main>
   <!-- Sign-in -->
   <section class="screen" id="s-signin">
+    <img class="hero hero-tall" src="img/team-hr22k.jpg" alt="The Muir team with two HR22K windlasses" width="960" height="720" decoding="async">
     <div class="card">
       <h1>Sign in</h1>
       <p class="muted">Use your Muir Microsoft 365 account. Receipts you send are filed under your name in the finance register.</p>
@@ -115,6 +122,7 @@
 
   <!-- Capture -->
   <section class="screen" id="s-capture">
+    <img class="hero" src="img/team-hr22k.jpg" alt="The Muir team with two HR22K windlasses" width="960" height="720" decoding="async">
     <button class="big-btn" id="btn-camera" aria-label="Take a photo of a receipt">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M4 7h3l2-3h6l2 3h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z"/><circle cx="12" cy="13" r="4"/>
@@ -136,7 +144,7 @@
     <input type="file" id="in-file" accept="image/*,application/pdf" multiple>
     <div class="queue hidden" id="queue-banner"></div>
     <div class="card hidden" id="tofinish-card">
-      <label class="field" style="margin-top:0">To finish — photo sent, details still needed</label>
+      <label class="field" style="margin-top:0;color:var(--warn)">Not sent yet — add the reason to send</label>
       <ul class="list" id="tofinish"></ul>
     </div>
     <div class="card">
@@ -153,6 +161,7 @@
       <div class="chips" id="types"></div>
       <label class="field" for="reason">Reason</label>
       <textarea id="reason" placeholder="What it's for, and who was there if paying for others" autocomplete="off"></textarea>
+      <div class="muted" id="reason-preview" style="font-size:13px;margin-top:4px"></div>
       <div id="attendees-wrap" class="hidden">
         <div class="row">
           <div style="flex:1;min-width:0"><label class="field" for="n-muir">No. Muir employees</label><input type="number" id="n-muir" inputmode="numeric" min="0" placeholder="0"></div>
@@ -161,16 +170,17 @@
         <label class="field" for="attendees">Who attended (optional)</label>
         <input type="text" id="attendees" placeholder="e.g. M Buckley, E van der Beek (Onboard Marine)">
       </div>
-      <label class="field">Currency</label>
+      <label class="field">Currency on the receipt</label>
       <div class="chips" id="currencies"></div>
       <div id="project-wrap" class="hidden">
         <label class="field" for="project">Project / job (optional)</label>
         <input type="text" id="project" list="project-list" placeholder="optional">
         <datalist id="project-list"></datalist>
       </div>
-      <div class="toggle">
-        <span>Payment: <strong id="pay-label">Credit Card</strong></span>
-        <button class="switch" id="sw-cash" role="switch" aria-checked="false" aria-label="Paid in cash"></button>
+      <label class="field">Paid with</label>
+      <div class="radios" role="radiogroup" aria-label="Paid with">
+        <label class="radio"><input type="radio" name="paid-with" id="pay-card" value="Credit Card" checked><span>Muir credit card</span></label>
+        <label class="radio"><input type="radio" name="paid-with" id="pay-cash" value="Cash"><span>Cash</span></label>
       </div>
       <div class="toggle">
         <span><strong>To be reimbursed</strong> (paid personally)</span>
@@ -182,7 +192,7 @@
       <button class="btn ghost" id="btn-back">Back</button>
       <button class="btn primary" id="btn-send">Send to finance</button>
     </div>
-    <button class="btn" id="btn-later" style="width:100%">No time now — send photo, add details later</button>
+    <button class="btn" id="btn-later" style="width:100%">No time now — save on phone, add reason later</button>
   </section>
 
   <!-- Done -->

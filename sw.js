@@ -1,8 +1,8 @@
 /* Muir Receipts service worker — caches the app shell so the icon opens instantly and offline.
    Network calls to Microsoft (login, Graph) are never cached. Bump CACHE on each release. */
-const CACHE = "muir-receipts-v0.3.2";
+const CACHE = "muir-receipts-v0.4.2";
 const SHELL = ["./", "./index.html", "./app.js", "./config.js", "./msal-browser.min.js", "./manifest.webmanifest",
-  "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png"];
+  "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png", "./img/team-hr22k.jpg"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -18,4 +18,13 @@ self.addEventListener("fetch", (e) => {
     fetch(e.request).then((r) => { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return r; })
       .catch(() => caches.match(e.request, { ignoreSearch: true }).then((m) => m || caches.match("./index.html")))
   );
+});
+
+// Tapping a reminder opens (or focuses) the app
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+    for (const c of cs) { if ("focus" in c) return c.focus(); }
+    return self.clients.openWindow("./");
+  }));
 });
