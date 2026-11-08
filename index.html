@@ -27,8 +27,11 @@
   body { display: flex; flex-direction: column; min-height: 100dvh; }
   header { background: var(--navy); color: #fff; padding: calc(var(--safe-top) + 12px) var(--pad) 12px;
     display: flex; align-items: center; justify-content: space-between; }
-  header .brand { font-weight: 700; letter-spacing: .3px; font-size: 18px; display: flex; align-items: center; gap: 10px; }
+  header .brand { background: none; border: 0; color: inherit; font-family: inherit; cursor: pointer; padding: 0; font-weight: 700; letter-spacing: .3px; font-size: 18px; display: flex; align-items: center; gap: 10px; }
   header .brand svg { width: 26px; height: 26px; }
+  .home-btn { display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.35); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .home-btn.hidden + .who { display: block; }
+  .home-btn:not(.hidden) + .who { display: none; }
   header .who { font-size: 13px; opacity: .85; max-width: 55%; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   main { flex: 1; padding: var(--pad); padding-bottom: calc(var(--pad) + var(--safe-bottom)); display: flex; flex-direction: column; gap: 14px; }
   .screen { display: none; flex-direction: column; gap: 14px; }
@@ -67,7 +70,7 @@
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
   .chip { border: 1px solid var(--line); background: var(--chip); color: var(--ink); border-radius: 999px; padding: 9px 14px; font-size: 15px; cursor: pointer; }
   .chip.on { background: var(--chip-on); color: #fff; border-color: var(--chip-on); }
-  textarea, input[type=text], select { width: 100%; font: inherit; font-size: 17px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--ink); }
+  textarea, input[type=text], input[type=number], select { width: 100%; font: inherit; font-size: 17px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--ink); }
   textarea { min-height: 72px; resize: vertical; }
   .toggle { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--line); }
   .toggle:first-of-type { border-top: 0; }
@@ -77,6 +80,23 @@
   .picker.behalf { border-color: #d97706; box-shadow: 0 0 0 1px #d97706 inset; font-weight: 600; }
   #belongs-list .chip.on.behalf { background: #d97706; border-color: #d97706; }
   @media (min-width: 700px) { main { max-width: 640px; width: 100%; margin: 0 auto; } }
+  .scan-stage { position: relative; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .scan-stage img { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .scan-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .scan-svg polygon { fill: rgba(232,163,61,.18); stroke: #e8a33d; stroke-width: 2.5; }
+  .handle { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; background: rgba(255,255,255,.9); border: 3px solid #e8a33d; box-shadow: 0 1px 4px rgba(0,0,0,.4); touch-action: none; cursor: grab; }
+  .handle::after { content: ""; position: absolute; inset: -12px; }
+  #s-scan > .row { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 calc(6px + var(--safe-bottom)); z-index: 6; }
+  .scan-preview img { max-height: 300px; }
+  .confirm { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 12px; border: 1px solid #f0d9a8; background: #fff7e8; border-radius: 12px; font-size: 14px; color: var(--ink); cursor: pointer; }
+  .confirm input { width: 22px; height: 22px; margin: 0; flex: none; accent-color: var(--ok); }
+  .loading-card { text-align: center; padding: 34px 20px; margin-top: 30px; }
+  .spinner.big { width: 42px; height: 42px; border-width: 4px; margin: 0 auto; border-color: rgba(15,39,66,.15); border-top-color: var(--navy); }
+  .loupe { position: absolute; width: 110px; height: 110px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 2px 10px rgba(0,0,0,.45); pointer-events: none; z-index: 5; }
+  .scan-preview { background: var(--chip); border-radius: 8px; padding: 8px; text-align: center; min-height: 80px; }
+  .scan-preview img { max-width: 100%; max-height: 420px; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+  .thumb .adj { position: absolute; left: 4px; bottom: 4px; background: rgba(15,39,66,.85); color: #fff; font-size: 11px; border-radius: 6px; padding: 2px 6px; pointer-events: none; }
+  .scanning { position: fixed; inset: 0; background: rgba(15,39,66,.55); display: flex; align-items: center; justify-content: center; z-index: 50; color: #fff; font-weight: 600; gap: 10px; }
   .admin-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
   .admin-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
   .admin-list li .sub { font-size: 13px; color: var(--muted); }
@@ -100,13 +120,18 @@
   .list { margin: 0; padding: 0; list-style: none; }
   .list li { display: flex; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
   .list li:first-child { border-top: 0; }
+  .list li { align-items: center; gap: 10px; }
+  .list .grow { flex: 1; min-width: 0; }
+  .del { flex: none; border: 1px solid var(--line); background: var(--card); color: var(--warn); border-radius: 10px; padding: 7px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+  .del:disabled { opacity: .5; }
+  .note { font-size: 13px; color: var(--muted); }
   footer { padding: 6px var(--pad) calc(10px + var(--safe-bottom)); font-size: 12px; color: var(--muted); text-align: center; }
   footer a { color: var(--muted); }
   .spinner { width: 18px; height: 18px; border: 3px solid rgba(0,0,0,.15); border-top-color: var(--accent-ink); border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #0b1420; --card: #122033; --ink: #e8eef5; --muted: #9fb0c2; --line: #233850; --chip: #1a2c42; }
-    textarea, input[type=text], select, .btn { background: #122033; color: var(--ink); }
+    textarea, input[type=text], input[type=number], select, .btn { background: #122033; color: var(--ink); }
     .thumb.add { background: #122033; }
     .queue { background: #2a2210; border-color: #5a4a1e; color: #f1e2bd; }
     .err { background: #3a1a16; border-color: #6b2a22; color: #f7c8c2; }
@@ -115,12 +140,13 @@
 </head>
 <body>
 <header>
-  <div class="brand">
+  <button type="button" class="brand" id="btn-home" aria-label="Home">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/>
     </svg>
     Muir Receipts
-  </div>
+  </button>
+  <button type="button" class="home-btn hidden" id="btn-home2"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Home</button>
   <div class="who" id="who"></div>
 </header>
 
@@ -132,6 +158,21 @@
   </div>
   <div class="install-arrow hidden" id="install-arrow">Tap <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg> below<br>&#8595;</div>
   <!-- Sign-in -->
+  <!-- Shown while the app starts; offers Refresh if it takes too long -->
+  <section class="screen active" id="s-loading">
+    <div class="card loading-card">
+      <div class="spinner big"></div>
+      <h2 style="margin:14px 0 4px;font-size:20px">Loading Muir Receipts…</h2>
+      <p class="muted" id="loading-step" style="margin:0;font-size:14px">Starting up</p>
+      <div class="hidden" id="loading-slow" style="margin-top:16px">
+        <p style="margin:0 0 12px;font-size:15px">This is taking longer than usual — probably a slow connection.</p>
+        <button class="btn primary" id="btn-reload" style="width:100%">Refresh</button>
+        <button class="btn" id="btn-skipwait" style="width:100%;margin-top:10px">Carry on without waiting</button>
+        <p class="muted" style="font-size:12px;margin:12px 0 0">Carrying on still lets you snap and send — receipts wait on the phone until the connection is back. Still stuck? <a href="#" id="btn-reset">Reset the app</a> (your unsent receipts are kept).</p>
+      </div>
+    </div>
+  </section>
+
   <section class="screen" id="s-signin">
     <img class="hero hero-tall" src="team-hr22k.jpg" alt="The Muir team with two HR22K windlasses" width="960" height="720" decoding="async">
     <div class="card">
@@ -165,6 +206,7 @@
     <input type="file" id="in-gallery" accept="image/*" multiple>
     <input type="file" id="in-file" accept="image/*,application/pdf" multiple>
     <div class="queue hidden" id="queue-banner"></div>
+    <ul class="list hidden" id="queue-list"></ul>
     <div class="card hidden" id="tofinish-card">
       <label class="field" style="margin-top:0;color:var(--warn)">Not sent yet — add the reason to send</label>
       <ul class="list" id="tofinish"></ul>
@@ -191,6 +233,7 @@
         </div>
         <label class="field" for="attendees">Who attended (optional)</label>
         <input type="text" id="attendees" placeholder="e.g. M Buckley, E van der Beek (Onboard Marine)">
+        <label class="confirm hidden" id="solo-wrap"><input type="checkbox" id="solo-confirm"><span>Please confirm only 1 person present for meal. Larger meal expenses may be queried accordingly.</span></label>
       </div>
       <label class="field">Currency on the receipt</label>
       <div class="chips" id="currencies"></div>
@@ -222,6 +265,34 @@
   </section>
 
   <!-- Done -->
+  <!-- Adjust a scanned page -->
+  <section class="screen" id="s-scan">
+    <div class="card">
+      <div class="muted" id="scan-hint" style="font-size:14px;margin-bottom:10px">Drag the four corners onto the corners of the receipt.</div>
+      <div class="scan-stage" id="scan-stage">
+        <img id="scan-img" alt="Photo">
+        <svg id="scan-svg" class="scan-svg"><polygon id="scan-poly"></polygon></svg>
+        <canvas id="scan-loupe" class="loupe hidden"></canvas>
+        <div class="handle" data-i="0"></div><div class="handle" data-i="1"></div><div class="handle" data-i="2"></div><div class="handle" data-i="3"></div>
+      </div>
+      <div class="chips" style="margin-top:12px">
+        <button type="button" class="chip" id="scan-rotate">↻ Turn</button>
+        <button type="button" class="chip" id="scan-guess">Best guess</button>
+        <button type="button" class="chip" id="scan-whole">Whole photo</button>
+      </div>
+      <div class="toggle">
+        <span><strong>Sharpen text</strong> (black and white, removes shadows)</span>
+        <button class="switch on" id="scan-enhance" role="switch" aria-checked="true" aria-label="Sharpen text"></button>
+      </div>
+      <label class="field">Result</label>
+      <div class="scan-preview"><img id="scan-preview" alt="Result"></div>
+    </div>
+    <div class="row">
+      <button class="btn ghost" id="scan-cancel">Cancel</button>
+      <button class="btn primary" id="scan-done">Use this</button>
+    </div>
+  </section>
+
   <section class="screen" id="s-done">
     <div class="card done">
       <div class="tick">✓</div>
@@ -229,6 +300,7 @@
       <p class="muted" id="done-text"></p>
     </div>
     <button class="big-btn" id="btn-another">Snap another</button>
+    <button class="btn" id="btn-done-home" style="width:100%">Home</button>
   </section>
   <!-- Cardholders (admins only) -->
   <section class="screen" id="s-admin">
@@ -275,13 +347,15 @@
     </div>
   </section>
 </main>
+<div class="scanning hidden" id="scanning"><div class="spinner" style="border-color:rgba(255,255,255,.3);border-top-color:#fff"></div>Scanning…</div>
 
 <footer>
-  <span id="version">Muir Receipts</span><span id="admin-link" class="hidden"> · <a href="#" id="btn-admin">Cardholders</a></span> · <a href="#" id="btn-signout">Sign out</a>
+  <span id="version">Muir Receipts</span> · <a href="#" id="btn-refresh">Refresh</a><span id="admin-link" class="hidden"> · <a href="#" id="btn-admin">Cardholders</a></span> · <a href="#" id="btn-signout">Sign out</a>
 </footer>
 
 <script src="msal-browser.min.js"></script>
 <script src="config.js"></script>
+<script src="scan.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

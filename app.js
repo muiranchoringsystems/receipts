@@ -5,7 +5,7 @@
    Demo mode (?demo=1): no sign-in, uploads are simulated — for previews and UI testing. */
 (() => {
   "use strict";
-  const APP_VERSION = "0.5.0";
+  const APP_VERSION = "0.6.4";
   const CFG = window.MUIR_CONFIG || {};
   // v0.4.1 lists live here (not in config.js) so the deployed config.js with the real clientId stays untouched.
   const APP_LISTS = {
@@ -102,7 +102,7 @@
 
   // ---------- DOM ----------
   const $ = (id) => document.getElementById(id);
-  const screens = { signin: $("s-signin"), capture: $("s-capture"), details: $("s-details"), done: $("s-done"), admin: $("s-admin") };
+  const screens = { loading: $("s-loading"), signin: $("s-signin"), capture: $("s-capture"), details: $("s-details"), done: $("s-done"), admin: $("s-admin"), scan: $("s-scan") };
   const el = {
     who: $("who"), version: $("version"), btnSignin: $("btn-signin"), signinErr: $("signin-err"),
     btnCamera: $("btn-camera"), btnGallery: $("btn-gallery"), btnFile: $("btn-file"),
@@ -134,6 +134,9 @@
   function show(name) {
     Object.values(screens).forEach((s) => s.classList.remove("active"));
     screens[name].classList.add("active");
+    const hb = document.getElementById("btn-home2");
+    if (hb) hb.classList.toggle("hidden", name === "capture" || name === "signin" || name === "loading");
+    if (name !== "loading") window.__muirStarted = true;
     window.scrollTo(0, 0);
   }
 
@@ -154,6 +157,7 @@
   }
   async function initAuth() {
     if (DEMO) {
+      if (localStorage.getItem("muir.demoSlow") === "1") await sleep(30000);   // test hook: a start-up that hangs
       state.user = { name: "Demo User", upn: "demo@muir.com.au" }; renderBelongs(null);
       return true;
     }
@@ -278,8 +282,9 @@
   }
   // Downscale to maxEdge and re-encode as JPEG. Browsers apply EXIF orientation when decoding
   // into an <img>, so the canvas output is upright.
-  async function normaliseImage(file) {
-    const { maxEdge = 1600, quality = 0.85 } = CFG.image || {};
+  async function normaliseImage(file, edge) {
+    const { maxEdge: cfgEdge = 1600, quality = 0.85 } = CFG.image || {};
+    const maxEdge = edge || cfgEdge;
     const img = await loadImage(file);
     const scale = Math.min(1, maxEdge / Math.max(img.naturalWidth, img.naturalHeight));
     const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
@@ -294,18 +299,125 @@
     const files = Array.from(fileList || []);
     if (!files.length) return;
     el.sendErr.classList.add("hidden");
+    const fresh = [];
     for (const f of files) {
       if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) {
         state.files.push({ name: f.name, type: "application/pdf", blob: f, kind: "pdf" });
       } else {
-        let blob = f;
-        try { blob = await normaliseImage(f); } catch (_) {}
-        state.files.push({ name: f.name.replace(/\.[^.]+$/, "") + ".jpg", type: "image/jpeg", blob, kind: "image", previewUrl: URL.createObjectURL(blob) });
+        state.files.push(await scanPage(f)); if (state.files[state.files.length - 1].orig) fresh.push(state.files.length - 1);
       }
     }
+    $("scanning").classList.add("hidden");
     renderThumbs();
+    // every new photo goes through the crop screen: the person sets the corners (nothing is cropped automatically)
+    sc.queue = fresh.slice(1);
+    if (fresh.length) { openScan(fresh[0], true); return; }
     show("details");
     if (!state.expenseType) el.reason.blur();
+  }
+  // ---------- Scanner: find the receipt, straighten it, sharpen the text (scan.js) ----------
+  async function scanPage(f) {
+    const name = f.name.replace(/\.[^.]+$/, "") + ".jpg";
+    $("scanning").classList.remove("hidden");
+    try {
+      if (!window.MuirScan) throw new Error("scanner not loaded");
+      const orig = await normaliseImage(f, 2200);               // kept so the corners can be set and changed later
+      const img = await loadImage(orig);
+      // best go: the scanner's guess at the receipt's corners, shown on the crop screen for the person to accept or fix.
+      // Nothing is cropped until they tap "Use this". No confident guess → a frame a little in from the edges.
+      const scan = { ...bestGuess(img), enhance: true, edited: false };
+      const blob = await normaliseImage(f);                    // used as-is if they skip the crop
+      return { name, type: "image/jpeg", blob, kind: "image", previewUrl: URL.createObjectURL(blob), orig, scan };
+    } catch (e) {
+      console.warn("Scan skipped:", e.message);
+      let blob = f; try { blob = await normaliseImage(f); } catch (_) {}
+      return { name, type: "image/jpeg", blob, kind: "image", previewUrl: URL.createObjectURL(blob) };
+    }
+  }
+  function bestGuess(img) {
+    const w = img.naturalWidth, h = img.naturalHeight, mx = w * 0.08, my = h * 0.08;
+    const frame = { quad: [[mx, my], [w - mx, my], [w - mx, h - my], [mx, h - my]], rot: 0, method: "manual", confident: false };
+    try {
+      const a = window.MuirScan.analyse(img);
+      return a.confident ? { quad: a.quad, rot: a.rot, method: a.method, confident: true } : frame;
+    } catch (_) { return frame; }
+  }
+  const sc = { i: -1, img: null, quad: null, rot: 0, enhance: true, url: null, prevUrl: null, timer: null, queue: [], fresh: false };
+  async function openScan(i, fresh = false) {
+    const f = state.files[i]; if (!f || !f.orig) return;
+    sc.i = i; sc.quad = (f.scan.quad).map((p) => p.slice()); sc.rot = f.scan.rot || 0; sc.enhance = f.scan.enhance !== false;
+    if (sc.url) URL.revokeObjectURL(sc.url);
+    sc.url = URL.createObjectURL(f.orig); sc.img = await loadImage(f.orig);
+    const im = $("scan-img"); im.src = sc.url; await im.decode().catch(() => {});
+    sc.fresh = fresh;
+    const n = state.files.filter((x) => x.orig).length, k = state.files.slice(0, i + 1).filter((x) => x.orig).length;
+    $("scan-hint").textContent = (n > 1 ? `Page ${k} of ${n}. ` : "") + (f.scan.confident && !f.scan.edited
+      ? "Best guess shown — check the result below. If it's right, tap Use this; if not, drag the corners or tap Turn."
+      : "Drag the four corners onto the corners of the receipt. Use Turn if it's sideways.");
+    $("scan-cancel").textContent = fresh ? "Skip crop" : "Cancel";
+    setSwitch($("scan-enhance"), sc.enhance);
+    show("scan"); drawScan(); previewScan();
+  }
+  function drawScan() {
+    const im = $("scan-img"), k = im.clientWidth / (sc.img.naturalWidth || sc.img.width);
+    $("scan-svg").setAttribute("viewBox", `0 0 ${im.clientWidth} ${im.clientHeight}`);
+    $("scan-poly").setAttribute("points", sc.quad.map((p) => `${p[0] * k},${p[1] * k}`).join(" "));
+    document.querySelectorAll("#scan-stage .handle").forEach((h) => { const p = sc.quad[+h.dataset.i]; h.style.left = p[0] * k + "px"; h.style.top = p[1] * k + "px"; });
+  }
+  // magnifier above the finger so the corner can be placed exactly
+  function loupe(ix, iy, px, py) {
+    const c = $("scan-loupe"), x = c.getContext("2d"), Z = 110, zoom = 3 * ($("scan-img").clientWidth / (sc.img.naturalWidth || sc.img.width));
+    c.width = c.height = Z * 2; c.classList.remove("hidden");
+    x.clearRect(0, 0, Z * 2, Z * 2); x.save(); x.beginPath(); x.arc(Z, Z, Z, 0, Math.PI * 2); x.clip();
+    const src = Z / zoom; x.drawImage(sc.img, ix - src, iy - src, src * 2, src * 2, 0, 0, Z * 2, Z * 2); x.restore();
+    x.strokeStyle = "#e8a33d"; x.lineWidth = 3; x.beginPath(); x.moveTo(Z - 18, Z); x.lineTo(Z + 18, Z); x.moveTo(Z, Z - 18); x.lineTo(Z, Z + 18); x.stroke();
+    const above = py > 140; c.style.left = Math.max(0, px - 55) + "px"; c.style.top = (above ? py - 135 : py + 25) + "px";
+  }
+  function previewScan() {
+    clearTimeout(sc.timer);
+    sc.timer = setTimeout(async () => {
+      const b = await window.MuirScan.render(sc.img, { quad: sc.quad, rot: sc.rot, enhance: sc.enhance, maxEdge: 700, quality: 0.7 });
+      if (sc.prevUrl) URL.revokeObjectURL(sc.prevUrl);
+      sc.prevUrl = URL.createObjectURL(b); $("scan-preview").src = sc.prevUrl;
+    }, 120);
+  }
+  function wireScan() {
+    const stage = $("scan-stage");
+    let drag = -1;
+    stage.querySelectorAll(".handle").forEach((h) => {
+      h.addEventListener("pointerdown", (e) => { drag = +h.dataset.i; h.setPointerCapture(e.pointerId); e.preventDefault(); });
+      h.addEventListener("pointermove", (e) => {
+        if (drag !== +h.dataset.i) return;
+        const im = $("scan-img"), r = im.getBoundingClientRect(), k = im.clientWidth / (sc.img.naturalWidth || sc.img.width);
+        const x = Math.max(0, Math.min(r.width, e.clientX - r.left)) / k, y = Math.max(0, Math.min(r.height, e.clientY - r.top)) / k;
+        sc.quad[drag] = [x, y]; drawScan(); loupe(x, y, e.clientX - r.left, e.clientY - r.top);
+      });
+      const end = () => { if (drag >= 0) { drag = -1; $("scan-loupe").classList.add("hidden"); previewScan(); } };
+      h.addEventListener("pointerup", end); h.addEventListener("pointercancel", end);
+    });
+    $("scan-rotate").onclick = () => { sc.rot = (sc.rot + 90) % 360; previewScan(); };
+    $("scan-guess").onclick = () => { const g = bestGuess(sc.img); sc.quad = g.quad.map((p) => p.slice()); sc.rot = g.rot; drawScan(); previewScan();
+      $("scan-hint").textContent = g.confident ? "Best guess shown — tap Use this if it's right, or drag the corners." : "Couldn't find the receipt on its own — drag the corners onto it."; };
+    $("scan-whole").onclick = () => { const w = sc.img.naturalWidth, h = sc.img.naturalHeight; sc.quad = [[0, 0], [w, 0], [w, h], [0, h]]; drawScan(); previewScan(); };
+    $("scan-enhance").onclick = () => { sc.enhance = !sc.enhance; setSwitch($("scan-enhance"), sc.enhance); previewScan(); };
+    const next = () => {
+      renderThumbs();
+      if (sc.queue.length) { openScan(sc.queue.shift(), true); return; }
+      show("details"); if (!state.expenseType) el.reason.blur();
+    };
+    $("scan-cancel").onclick = () => { if (!sc.fresh) sc.queue = []; next(); };
+    $("scan-done").onclick = async () => {
+      const f = state.files[sc.i]; if (!f) { show("details"); return; }
+      $("scanning").classList.remove("hidden");
+      try {
+        const blob = await window.MuirScan.render(sc.img, { quad: sc.quad, rot: sc.rot, enhance: sc.enhance, maxEdge: (CFG.image || {}).maxEdge || 1600 });
+        if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+        f.blob = blob; f.previewUrl = URL.createObjectURL(blob);
+        f.scan = { ...f.scan, quad: sc.quad.map((p) => p.slice()), rot: sc.rot, enhance: sc.enhance, edited: true };
+      } finally { $("scanning").classList.add("hidden"); }
+      next();
+    };
+    window.addEventListener("resize", () => { if (screens.scan.classList.contains("active")) drawScan(); });
   }
   function removeFile(i) {
     const f = state.files[i];
@@ -318,7 +430,8 @@
     el.thumbs.innerHTML = "";
     state.files.forEach((f, i) => {
       const d = document.createElement("div"); d.className = "thumb";
-      d.innerHTML = f.kind === "image" ? `<img alt="receipt ${i + 1}" src="${f.previewUrl}">` : `<div class="pdf">PDF</div>`;
+      d.innerHTML = f.kind === "image" ? `<img alt="receipt ${i + 1}" src="${f.previewUrl}">${f.orig ? '<span class="adj">Adjust</span>' : ""}` : `<div class="pdf">PDF</div>`;
+      if (f.orig) { d.style.cursor = "pointer"; d.onclick = (e) => { if (e.target.tagName !== "BUTTON") openScan(i); }; }
       const x = document.createElement("button"); x.type = "button"; x.textContent = "×"; x.setAttribute("aria-label", "Remove");
       x.onclick = () => removeFile(i);
       d.appendChild(x); el.thumbs.appendChild(d);
@@ -363,6 +476,17 @@
   function updateConditional() {
     const needAttendees = (state.lists.attendeeTypes || []).includes(state.expenseType);
     el.attendeesWrap.classList.toggle("hidden", !needAttendees);
+    // meals: start at 1 Muir person (the payer); a solo meal must be ticked as confirmed
+    if (needAttendees && el.nMuir.value === "" && el.nClients.value === "") el.nMuir.value = "1";
+    updateSolo();
+  }
+  function isSolo() {
+    return !el.attendeesWrap.classList.contains("hidden") && Number(el.nMuir.value || 0) + Number(el.nClients.value || 0) === 1;
+  }
+  function updateSolo() {
+    const solo = isSolo();
+    $("solo-wrap").classList.toggle("hidden", !solo);
+    if (!solo) $("solo-confirm").checked = false;
   }
   function setSwitch(btn, on) { btn.classList.toggle("on", on); btn.setAttribute("aria-checked", String(on)); }
   // ---------- Cardholder list (shared, in SharePoint) ----------
@@ -543,7 +667,7 @@
   function resetForm() {
     state.files.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl));
     state.files = []; state.expenseType = null; state.personal = false; state.cash = false; state.currency = null; state.finishing = null;
-    el.reason.value = ""; el.attendees.value = ""; el.project.value = ""; el.nMuir.value = ""; el.nClients.value = "";
+    el.reason.value = ""; el.attendees.value = ""; el.project.value = ""; el.nMuir.value = ""; el.nClients.value = ""; $("solo-confirm").checked = false;
     setSwitch(el.swPersonal, false); el.payCard.checked = true; el.payCash.checked = false; renderBelongs(null); toggleBelongsList(false);
     el.sendErr.classList.add("hidden");
     [el.inCamera, el.inGallery, el.inFile].forEach((i) => (i.value = ""));
@@ -555,6 +679,7 @@
     if (el.reason.value.trim().length < 3) return "Say what it was for (e.g. \u201cTaxi to airport\u201d) — finance will chase you for it otherwise.";
     if (!state.currency) return "Pick the currency shown on the receipt.";
     if (!el.attendeesWrap.classList.contains("hidden") && !(Number(el.nMuir.value) + Number(el.nClients.value) > 0)) return "How many Muir employees and clients? (needed for FBT).";
+    if (isSolo() && !$("solo-confirm").checked) return "Please confirm only 1 person present for meal (tick the box), or change the number of people.";
     return null;
   }
 
@@ -583,10 +708,12 @@
       attendees: el.attendeesWrap.classList.contains("hidden") ? null : (el.attendees.value.trim() || null),
       n_muir_employees: el.attendeesWrap.classList.contains("hidden") ? null : Number(el.nMuir.value || 0),
       n_clients: el.attendeesWrap.classList.contains("hidden") ? null : Number(el.nClients.value || 0),
+      solo_meal_confirmed: isSolo() ? $("solo-confirm").checked : null,
       project: el.project.value.trim() || null,
       currency: state.currency, payment_type: state.cash ? "Cash" : "Credit Card",
       to_be_reimbursed: state.personal, card: state.personal ? "personal" : "company",
       files: fileNames,
+      scan: state.files.map((f) => (f.scan ? { guess: f.scan.method, guessed: !!f.scan.confident, cropped: !!f.scan.edited, sharpened: !!f.scan.edited && f.scan.enhance !== false } : null)),
     };
     return { id: prefix + (status === "complete" && fin ? "-details" : ""), prefix, meta, files, metaOnly: !!fin };
   }
@@ -604,9 +731,9 @@
     const draft = {
       prefix: fin0 ? fin0.prefix : `${stamp()}_${local}`, local: true,
       captured_at: fin0 && fin0.captured_at ? fin0.captured_at : new Date().toISOString(),
-      files: state.files.map((f) => ({ type: f.type, blob: f.blob, kind: f.kind })), pages: state.files.length,
+      files: state.files.map((f) => ({ type: f.type, blob: f.blob, kind: f.kind, orig: f.orig || null, scan: f.scan || null })), pages: state.files.length,
       fields: { expenseType: state.expenseType, reason: el.reason.value, currency: state.currency, cash: state.cash, personal: state.personal,
-                attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value, belongs: state.belongs || "" },
+                attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value, belongs: state.belongs || "", solo: $("solo-confirm").checked },
     };
     await draftPut(draft);
     askNotifyPermission();   // needed for the icon badge on iPhone; asked once, on this tap
@@ -622,6 +749,7 @@
       const x = d.fields || {};
       state.expenseType = x.expenseType || null; state.cash = !!x.cash; state.personal = !!x.personal;
       el.reason.value = x.reason || ""; el.attendees.value = x.attendees || ""; el.nMuir.value = x.nMuir || ""; el.nClients.value = x.nClients || ""; el.project.value = x.project || "";
+      $("solo-confirm").checked = !!x.solo;
       el.payCash.checked = state.cash; el.payCard.checked = !state.cash; setSwitch(el.swPersonal, state.personal);
       state.currency = x.currency || null;
       renderBelongs(x.belongs || null);
@@ -706,7 +834,11 @@
       const when = new Date(at(d)).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
       const hrs = (Date.now() - new Date(at(d)).getTime()) / 36e5;
       const age = hrs >= 24 ? `${Math.floor(hrs / 24)} day${hrs >= 48 ? "s" : ""} old` : "";
-      li.innerHTML = `<span>${when} · ${d.pages} page${d.pages > 1 ? "s" : ""}${age ? ` · <strong style="color:var(--warn)">${age}</strong>` : ""}<br><span class="muted">${d.local ? "Not sent — tap to add the reason" : "Tap to add type and reason"}</span></span><span>›</span>`;
+      li.innerHTML = `<span class="grow">${when} · ${d.pages} page${d.pages > 1 ? "s" : ""}${age ? ` · <strong style="color:var(--warn)">${age}</strong>` : ""}<br><span class="muted">${d.local ? "Not sent — tap to add the reason" : "Tap to add type and reason"}</span></span>`;
+      const del = document.createElement("button"); del.type = "button"; del.className = "del"; del.textContent = "Delete";
+      del.onclick = (e) => { e.stopPropagation(); deleteDraft(d, del); };
+      const go = document.createElement("span"); go.textContent = "›";
+      li.append(del, go);
       li.onclick = () => openDraft(d.prefix);
       el.tofinish.appendChild(li);
     });
@@ -745,9 +877,23 @@
     } finally { flushing = false; refreshQueueBanner(); }
   }
   async function refreshQueueBanner() {
-    const n = (await queueAll().catch(() => [])).length;
+    const items = await queueAll().catch(() => []);
+    const n = items.length;
     el.queueBanner.classList.toggle("hidden", n === 0);
     el.queueBanner.textContent = n ? `${n} receipt${n > 1 ? "s" : ""} waiting to send — will go automatically when online.` : "";
+    const ql = $("queue-list"); ql.innerHTML = ""; ql.classList.toggle("hidden", n === 0);
+    items.forEach((sub) => {
+      const li = document.createElement("li");
+      const when = new Date(sub.meta.captured_at).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+      li.innerHTML = `<span class="grow">${when} · ${escapeHtml(sub.meta.expense_type || "Photo")}<br><span class="muted">${escapeHtml(sub.meta.reason || "")}</span></span>`;
+      const del = document.createElement("button"); del.type = "button"; del.className = "del"; del.textContent = "Remove";
+      del.onclick = async () => {
+        if (!confirm("Remove this receipt? It hasn't been sent yet, so finance will never see it.")) return;
+        if (inflight.has(sub.id)) { alert("It's sending right now — wait a moment, then use Undo under Recent if needed."); return; }
+        await queueDel(sub.id); removeRecent(sub.id); refreshQueueBanner();
+      };
+      li.appendChild(del); ql.appendChild(li);
+    });
   }
   function setNet() {
     const on = navigator.onLine;
@@ -760,7 +906,8 @@
   function addRecent(sub, status) {
     const list = JSON.parse(localStorage.getItem("muir.recent") || "[]");
     const i = list.findIndex((x) => x.id === sub.id);
-    const item = { id: sub.id, at: sub.meta.captured_at, type: sub.meta.expense_type, reason: sub.meta.reason, status };
+    const item = { id: sub.id, prefix: sub.prefix, files: [`${sub.prefix}_meta.json`].concat(sub.meta.files || []),   // meta first: the review ignores a set without it
+                   at: sub.meta.captured_at, type: sub.meta.expense_type, reason: sub.meta.reason, status };
     if (i >= 0) list[i] = item; else list.unshift(item);
     localStorage.setItem("muir.recent", JSON.stringify(list.slice(0, 8)));
     renderRecent();
@@ -772,9 +919,69 @@
       const li = document.createElement("li");
       const when = new Date(x.at).toLocaleDateString("en-AU", { day: "numeric", month: "short" });
       const label = x.type ? `${x.type}<br><span class="muted">${escapeHtml(x.reason || "")}</span>` : `Photo only<br><span class="muted">details still to add</span>`;
-      li.innerHTML = `<span>${when} · ${label}</span><span>${x.status === "sent" ? "✓" : "⏳"}</span>`;
+      li.innerHTML = `<span class="grow">${when} · ${label}</span><span>${x.status === "sent" ? "✓" : x.status === "removed" ? "✕" : "⏳"}</span>`;
+      if (x.status === "sent" && x.files && x.files.length) {
+        const del = document.createElement("button"); del.type = "button"; del.className = "del"; del.textContent = "Undo";
+        del.title = "Sent by mistake? Take it back before finance picks it up";
+        del.onclick = () => undoSent(x, del);
+        li.insertBefore(del, li.lastChild);
+      }
       el.recent.appendChild(li);
     });
+  }
+  function removeRecent(id) {
+    const list = JSON.parse(localStorage.getItem("muir.recent") || "[]").filter((x) => x.id !== id);
+    localStorage.setItem("muir.recent", JSON.stringify(list)); renderRecent();
+  }
+  function markRecent(id, status) {
+    const list = JSON.parse(localStorage.getItem("muir.recent") || "[]");
+    list.forEach((x) => { if (x.id === id) x.status = status; });
+    localStorage.setItem("muir.recent", JSON.stringify(list)); renderRecent();
+  }
+  // Delete files this phone uploaded to Incoming, if finance hasn't picked them up yet.
+  // Returns { deleted, gone } — gone = files no longer in Incoming (already filed by the receipts review).
+  async function deleteFromIncoming(names) {
+    let deleted = 0, gone = 0;
+    for (const n of names) {
+      if (DEMO) { await sleep(150); deleted++; continue; }
+      try { await graph(`/drives/${CFG.driveId}/items/${CFG.incomingFolderId}:/${encodeURIComponent(n)}:`, { method: "DELETE" }); deleted++; }
+      catch (e) { if (/Graph 404/.test(e.message)) gone++; else throw e; }
+    }
+    return { deleted, gone };
+  }
+  const PICKED_UP = "Finance has already picked this one up, so it can't be taken back from here. Email receipts@muir.com.au saying which receipt to remove and why.";
+  async function undoSent(x, btn) {
+    if (!confirm("Take this receipt back? It will be removed before finance processes it.")) return;
+    btn.disabled = true;
+    try {
+      const r = await deleteFromIncoming(x.files);
+      if (r.deleted === 0 && r.gone > 0) { alert(PICKED_UP); btn.disabled = false; return; }
+      markRecent(x.id, "removed");
+    } catch (e) {
+      btn.disabled = false;
+      alert(/Graph 403/.test(e.message) ? "SharePoint won't let you remove it. Email receipts@muir.com.au saying which receipt to remove." : "Couldn't remove it: " + e.message);
+    }
+  }
+  async function deleteDraft(d, btn) {
+    const msg = d.local ? "Delete this receipt from your phone? It hasn't been sent, so finance will never see it."
+                        : "Delete this receipt? The photo was already uploaded, so it will be taken back from finance too.";
+    if (!confirm(msg)) return;
+    btn.disabled = true;
+    try {
+      if (!d.local && d.files && d.files.length) {
+        const r = await deleteFromIncoming([`${d.prefix}_meta.json`].concat(d.files));
+        if (r.deleted === 0 && r.gone > 0) { alert(PICKED_UP); btn.disabled = false; return; }
+      }
+      await draftDel(d.prefix); renderDrafts();
+    } catch (e) { btn.disabled = false; alert("Couldn't delete it: " + e.message); }
+  }
+  // Home from anywhere (header logo). Asks first if a new receipt is half-done.
+  function goHome() {
+    if (!state.user) return;
+    const onDetails = screens.details.classList.contains("active");
+    if (onDetails && state.files.length && !state.finishing && !confirm("Leave this receipt? It hasn't been sent or saved. (Use “No time now” to keep it.)")) return;
+    if (onDetails) { resetForm(); el.btnLater.classList.remove("hidden"); el.btnSend.textContent = "Send to finance"; }
+    show("capture"); renderDrafts(); refreshQueueBanner(); renderRecent();
   }
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
@@ -803,6 +1010,12 @@
   el.btnSend.onclick = send;
   el.btnLater.onclick = sendLater;
   el.reason.addEventListener("input", updateReasonPreview);
+  wireScan();
+  [el.nMuir, el.nClients].forEach((i) => i.addEventListener("input", updateSolo));
+  $("solo-confirm").addEventListener("change", () => el.sendErr.classList.add("hidden"));
+  $("btn-home").onclick = goHome;
+  $("btn-home2").onclick = goHome;
+  $("btn-done-home").onclick = goHome;
   el.btnAnother.onclick = () => { show("capture"); setTimeout(() => el.inCamera.click(), 50); };
   window.addEventListener("online", setNet); window.addEventListener("offline", setNet);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) flushQueue(); });
@@ -811,19 +1024,53 @@
     navigator.serviceWorker.register("sw.js").catch((e) => console.warn("SW registration failed", e));
   }
 
-  (async () => {
-    const ok = await initAuth();
-    if (!ok) { show("signin"); return; }
-    if (!(await ensureSignedIn())) return;   // redirecting to Microsoft; app reloads after
+  // ---------- Start-up: loading screen, time limits, Refresh ----------
+  // Each network step gets a time limit, so a slow or flaky connection can't leave the app stuck on a blank screen.
+  const withTimeout = (p, ms, fallback) => Promise.race([p, new Promise((res) => setTimeout(() => res(fallback), ms))]);
+  const step = (t) => { const x = $("loading-step"); if (x) x.textContent = t; };
+  let started = false;
+  const slowTimer = setTimeout(() => { if (!started && !window.__muirStarted) $("loading-slow").classList.remove("hidden"); }, 8000);
+  async function resetApp() {
+    if (!confirm("Reset the app? This clears the saved copy of the app and reloads it. Receipts not sent yet stay on the phone.")) return;
+    try { const regs = (await navigator.serviceWorker?.getRegistrations?.()) || []; for (const r of regs) await r.unregister(); } catch (_) {}
+    try { for (const k of await caches.keys()) await caches.delete(k); } catch (_) {}
+    location.reload();
+  }
+  $("btn-reload").onclick = () => location.reload();
+  $("btn-refresh").onclick = (e) => { e.preventDefault(); location.reload(); };
+  $("btn-reset").onclick = (e) => { e.preventDefault(); resetApp(); };
+  let skipWait = null;
+  const skipped = new Promise((res) => { skipWait = res; });
+  $("btn-skipwait").onclick = () => skipWait("skip");
+
+  async function boot() {
+    step("Checking your sign-in…");
+    const ok = await Promise.race([withTimeout(initAuth(), 15000, "slow"), skipped]);
+    if (ok === "slow" || ok === "skip") {
+      // MSAL couldn't finish (no connection): use the account remembered on this phone, if any
+      if (DEMO) state.user = { name: "Demo User", upn: "demo@muir.com.au" };
+      else try { const m = msalInstance(); const a = m.getActiveAccount() || m.getAllAccounts()[0]; if (a) { state.account = a; state.user = { name: String(a.name || a.username).split("|")[0].trim(), upn: a.username }; } } catch (_) {}
+      if (!state.user) { show("signin"); return; }
+    } else if (!ok) { show("signin"); return; }
+    step("Connecting to Microsoft…");
+    const signed = await Promise.race([withTimeout(ensureSignedIn(), 10000, true), skipped.then(() => true)]);
+    if (!signed) return;                        // redirecting to Microsoft; the app reloads after
     el.who.textContent = state.user.name;
-    await loadRemoteConfig();
-    await loadCardholders();
+    step("Getting the latest lists…");
+    await Promise.race([withTimeout(Promise.all([loadRemoteConfig(), loadCardholders()]), 8000), skipped]);
+    if (!state.chDoc) { try { applyCardholders(JSON.parse(localStorage.getItem("muir.cardholders") || "null") || builtInDoc()); } catch (_) { applyCardholders(builtInDoc()); } }
     renderTypes(); renderCurrencies(); updateConditional(); renderRecent(); setNet(); refreshQueueBanner(); renderDrafts(); remindDrafts();
-    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { renderDrafts(); remindDrafts(); } });
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { renderDrafts(); remindDrafts(); flushQueue(); } });
+    started = true; clearTimeout(slowTimer);
     show("capture");
     flushQueue();
-  })();
+  }
+  boot().catch((e) => {
+    console.error("Start-up failed", e);
+    step("Something went wrong starting up (" + (e && e.message ? e.message : e) + ").");
+    $("loading-slow").classList.remove("hidden");
+  });
 
   // Exposed for tests / console
-  window.__muir = { state, loadCardholders, openAdmin, normaliseImage, buildSubmission, queueAll, flushQueue, draftsAll, APP_VERSION };
+  window.__muir = { state, queuePut, loadCardholders, openAdmin, normaliseImage, buildSubmission, queueAll, flushQueue, draftsAll, APP_VERSION };
 })();
