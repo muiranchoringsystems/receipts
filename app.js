@@ -5,7 +5,7 @@
    Demo mode (?demo=1): no sign-in, uploads are simulated — for previews and UI testing. */
 (() => {
   "use strict";
-  const APP_VERSION = "0.6.4";
+  const APP_VERSION = "0.6.6";
   const CFG = window.MUIR_CONFIG || {};
   // v0.4.1 lists live here (not in config.js) so the deployed config.js with the real clientId stays untouched.
   const APP_LISTS = {
@@ -54,6 +54,14 @@
   // Edited on the Cardholders screen (admins only); everyone's app reads it at start; the receipts run syncs it to the register.
   const CARDHOLDERS_FILE_ID = "01NLAK5FAOAGJV3WVO4FHZMN4CUWKLZWOL";
   const DEMO = new URLSearchParams(location.search).has("demo") || localStorage.getItem("muir.demo") === "1";
+  // Any unexpected error shows a red bar (with the version) instead of the app silently doing nothing — screenshot it for Max.
+  function showCrash(msg) {
+    const b = document.getElementById("crash"); if (!b) return;
+    b.innerHTML = `Something went wrong (v${APP_VERSION}): ${String(msg).replace(/[<>&]/g, "").slice(0, 160)} — <a href="#" onclick="location.reload();return false">Refresh</a>`;
+    b.classList.remove("hidden");
+  }
+  window.addEventListener("error", (e) => showCrash(e.message || e.error || "error"));
+  window.addEventListener("unhandledrejection", (e) => showCrash((e.reason && e.reason.message) || e.reason || "error"));
 
   // ---------- Install helper (shown when opened in a browser instead of from the home-screen icon) ----------
   let deferredInstall = null;
@@ -234,7 +242,7 @@
   }
   // Upload one file into the Incoming folder. Simple PUT ≤ 4 MB, upload session above that.
   async function uploadFile(name, blob, conflict = "rename") {
-    if (DEMO) { await token(); await sleep(400); console.log("[demo] uploaded", name, blob.size, conflict); return { name }; }
+    if (DEMO) { await token(); await sleep(400); if (localStorage.getItem("muir.demoFail") === "403") throw new Error("Graph 403: Access denied"); console.log("[demo] uploaded", name, blob.size, conflict); return { name }; }
     const base = `/drives/${CFG.driveId}/items/${CFG.incomingFolderId}:/${encodeURIComponent(name)}:`;
     if (blob.size <= 4 * 1024 * 1024) {
       const r = await graph(`${base}/content?@microsoft.graph.conflictBehavior=${conflict}`, {
@@ -480,13 +488,14 @@
     if (needAttendees && el.nMuir.value === "" && el.nClients.value === "") el.nMuir.value = "1";
     updateSolo();
   }
+  function soloBox() { return document.getElementById("solo-confirm") || { checked: false }; }
   function isSolo() {
     return !el.attendeesWrap.classList.contains("hidden") && Number(el.nMuir.value || 0) + Number(el.nClients.value || 0) === 1;
   }
   function updateSolo() {
     const solo = isSolo();
-    $("solo-wrap").classList.toggle("hidden", !solo);
-    if (!solo) $("solo-confirm").checked = false;
+    const sw = document.getElementById("solo-wrap"); if (sw) sw.classList.toggle("hidden", !solo);
+    if (!solo) soloBox().checked = false;
   }
   function setSwitch(btn, on) { btn.classList.toggle("on", on); btn.setAttribute("aria-checked", String(on)); }
   // ---------- Cardholder list (shared, in SharePoint) ----------
@@ -667,7 +676,7 @@
   function resetForm() {
     state.files.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl));
     state.files = []; state.expenseType = null; state.personal = false; state.cash = false; state.currency = null; state.finishing = null;
-    el.reason.value = ""; el.attendees.value = ""; el.project.value = ""; el.nMuir.value = ""; el.nClients.value = ""; $("solo-confirm").checked = false;
+    el.reason.value = ""; el.attendees.value = ""; el.project.value = ""; el.nMuir.value = ""; el.nClients.value = ""; soloBox().checked = false;
     setSwitch(el.swPersonal, false); el.payCard.checked = true; el.payCash.checked = false; renderBelongs(null); toggleBelongsList(false);
     el.sendErr.classList.add("hidden");
     [el.inCamera, el.inGallery, el.inFile].forEach((i) => (i.value = ""));
@@ -679,7 +688,7 @@
     if (el.reason.value.trim().length < 3) return "Say what it was for (e.g. \u201cTaxi to airport\u201d) — finance will chase you for it otherwise.";
     if (!state.currency) return "Pick the currency shown on the receipt.";
     if (!el.attendeesWrap.classList.contains("hidden") && !(Number(el.nMuir.value) + Number(el.nClients.value) > 0)) return "How many Muir employees and clients? (needed for FBT).";
-    if (isSolo() && !$("solo-confirm").checked) return "Please confirm only 1 person present for meal (tick the box), or change the number of people.";
+    if (isSolo() && !soloBox().checked) return "Please confirm only 1 person present for meal (tick the box), or change the number of people.";
     return null;
   }
 
@@ -708,7 +717,7 @@
       attendees: el.attendeesWrap.classList.contains("hidden") ? null : (el.attendees.value.trim() || null),
       n_muir_employees: el.attendeesWrap.classList.contains("hidden") ? null : Number(el.nMuir.value || 0),
       n_clients: el.attendeesWrap.classList.contains("hidden") ? null : Number(el.nClients.value || 0),
-      solo_meal_confirmed: isSolo() ? $("solo-confirm").checked : null,
+      solo_meal_confirmed: isSolo() ? soloBox().checked : null,
       project: el.project.value.trim() || null,
       currency: state.currency, payment_type: state.cash ? "Cash" : "Credit Card",
       to_be_reimbursed: state.personal, card: state.personal ? "personal" : "company",
@@ -718,10 +727,11 @@
     return { id: prefix + (status === "complete" && fin ? "-details" : ""), prefix, meta, files, metaOnly: !!fin };
   }
   async function transmit(sub) {
-    for (const f of sub.files) await uploadFile(f.name, f.blob);
+    // "replace" so a retry after a half-finished upload overwrites rather than making duplicates (names are unique per receipt)
+    for (const f of sub.files) await uploadFile(f.name, f.blob, "replace");
     const metaBlob = new Blob([JSON.stringify(sub.meta, null, 2)], { type: "application/json" });
     // Uploaded last so its presence marks the set complete; a details-later completion replaces the pending meta.
-    await uploadFile(`${sub.prefix}_meta.json`, metaBlob, sub.metaOnly ? "replace" : "rename");
+    await uploadFile(`${sub.prefix}_meta.json`, metaBlob, "replace");
   }
   // ---- "No time now": keep the photo ON THE PHONE (nothing is sent) until a reason is added ----
   async function sendLater() {
@@ -733,7 +743,7 @@
       captured_at: fin0 && fin0.captured_at ? fin0.captured_at : new Date().toISOString(),
       files: state.files.map((f) => ({ type: f.type, blob: f.blob, kind: f.kind, orig: f.orig || null, scan: f.scan || null })), pages: state.files.length,
       fields: { expenseType: state.expenseType, reason: el.reason.value, currency: state.currency, cash: state.cash, personal: state.personal,
-                attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value, belongs: state.belongs || "", solo: $("solo-confirm").checked },
+                attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value, belongs: state.belongs || "", solo: soloBox().checked },
     };
     await draftPut(draft);
     askNotifyPermission();   // needed for the icon badge on iPhone; asked once, on this tap
@@ -741,7 +751,21 @@
     showDone("Saved on your phone — not sent", "It's at the top of the home screen under \u201cNot sent yet\u201d, and the app icon shows a count until it's done. Add the reason and it sends.");
   }
   async function openDraft(prefix) {
-    const d = (await draftsAll()).find((x) => x.prefix === prefix); if (!d) return;
+    try { await openDraftInner(prefix); }
+    catch (e) {
+      console.error("openDraft", e);
+      alert("Couldn't open this receipt (" + (e && e.message ? e.message : e) + "). If it keeps happening, Delete it and snap the receipt again.");
+      show("capture");
+    }
+  }
+  async function openDraftInner(prefix) {
+    const d = (await draftsAll()).find((x) => x.prefix === prefix); if (!d) { renderDrafts(); return; }
+    // iPhone sometimes drops photos saved inside the app; check the photo can still be read before opening
+    const firstBlob = d.local ? (d.files && d.files[0] && d.files[0].blob) : d.thumb;
+    if (firstBlob) {
+      try { await firstBlob.slice(0, 16).arrayBuffer(); }
+      catch (_) { alert("The photo for this receipt was cleared from the phone, so it can't be opened. Please Delete it and snap the receipt again."); return; }
+    }
     resetForm();
     if (d.local) {
       state.finishing = { prefix: d.prefix, captured_at: d.captured_at, local: true };
@@ -749,7 +773,7 @@
       const x = d.fields || {};
       state.expenseType = x.expenseType || null; state.cash = !!x.cash; state.personal = !!x.personal;
       el.reason.value = x.reason || ""; el.attendees.value = x.attendees || ""; el.nMuir.value = x.nMuir || ""; el.nClients.value = x.nClients || ""; el.project.value = x.project || "";
-      $("solo-confirm").checked = !!x.solo;
+      soloBox().checked = !!x.solo;
       el.payCash.checked = state.cash; el.payCard.checked = !state.cash; setSwitch(el.swPersonal, state.personal);
       state.currency = x.currency || null;
       renderBelongs(x.belongs || null);
@@ -783,8 +807,9 @@
       showDone(wasFinishing && !wasLocal ? "Details sent" : "Sent", `${sub.meta.expense_type} · ${sub.meta.reason}`);
     } catch (e) {
       addRecent(sub, "queued");
-      const why = e.signin ? "Your sign-in has expired — close and reopen the app to sign in; it will then send automatically."
-        : navigator.onLine ? "Upload failed (" + e.message + "); it will retry." : "You're offline.";
+      const wf = navigator.onLine ? whyFailed(e) : { kind: "network", text: "You're offline — it will send when you're back online." };
+      sub.lastError = wf; sub.lastTry = new Date().toISOString(); sub.tries = 1; await queuePut(sub).catch(() => {});
+      const why = wf.text;
       showDone("Saved — will send shortly", `${sub.meta.expense_type} · ${sub.meta.reason}. ${why}`);
     } finally {
       inflight.delete(sub.id);
@@ -834,7 +859,7 @@
       const when = new Date(at(d)).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
       const hrs = (Date.now() - new Date(at(d)).getTime()) / 36e5;
       const age = hrs >= 24 ? `${Math.floor(hrs / 24)} day${hrs >= 48 ? "s" : ""} old` : "";
-      li.innerHTML = `<span class="grow">${when} · ${d.pages} page${d.pages > 1 ? "s" : ""}${age ? ` · <strong style="color:var(--warn)">${age}</strong>` : ""}<br><span class="muted">${d.local ? "Not sent — tap to add the reason" : "Tap to add type and reason"}</span></span>`;
+      li.innerHTML = `<span class="grow">${when} · ${d.pages || (d.files || []).length || 1} page${(d.pages || (d.files || []).length) > 1 ? "s" : ""}${age ? ` · <strong style="color:var(--warn)">${age}</strong>` : ""}<br><span class="muted">${d.local ? "Not sent — tap to add the reason" : "Tap to add type and reason"}</span></span>`;
       const del = document.createElement("button"); del.type = "button"; del.className = "del"; del.textContent = "Delete";
       del.onclick = (e) => { e.stopPropagation(); deleteDraft(d, del); };
       const go = document.createElement("span"); go.textContent = "›";
@@ -872,20 +897,53 @@
       for (const sub of await queueAll()) {
         if (inflight.has(sub.id)) continue;
         try { await transmit(sub); await queueDel(sub.id); addRecent(sub, "sent"); }
-        catch (e) { console.warn("Queue item still pending:", sub.id, e.message); break; }
+        catch (e) {
+          console.warn("Queue item still pending:", sub.id, e.message);
+          sub.lastError = whyFailed(e); sub.lastTry = new Date().toISOString(); sub.tries = (sub.tries || 0) + 1;
+          await queuePut(sub).catch(() => {});
+          if (e.signin || !navigator.onLine) break;     // same for every item: stop and wait
+          // otherwise carry on with the next receipt — one bad item mustn't hold up the rest
+        }
       }
     } finally { flushing = false; refreshQueueBanner(); }
+  }
+  // Plain-English reason an upload failed, saved with the receipt and shown in the waiting list
+  function whyFailed(e) {
+    const m = String((e && e.message) || e || "");
+    if (e && e.signin) return { kind: "signin", text: "Your Microsoft sign-in has expired — tap Sign in again." };
+    if (/Graph 403|accessDenied/i.test(m)) return { kind: "access", text: "SharePoint won't accept it: you don't have permission to upload. Ask Max to check your access to Corporate Cards › Incoming." };
+    if (/Graph 401/.test(m)) return { kind: "signin", text: "Microsoft didn't accept your sign-in — tap Sign in again." };
+    if (/Graph 404/.test(m)) return { kind: "folder", text: "The receipts folder couldn't be found. Tell Max (the app may need an update)." };
+    if (/NotReadable|WebKitBlobResource|could not be read|NotFoundError/i.test(m)) return { kind: "photo", text: "The photo saved on this phone can't be read any more (the iPhone cleared it). Remove this one and snap the receipt again." };
+    if (/Failed to fetch|NetworkError|Load failed|offline|timed? ?out/i.test(m)) return { kind: "network", text: "Couldn't reach Microsoft — it will try again when the connection is better." };
+    return { kind: "other", text: "Upload failed: " + m.slice(0, 120) };
   }
   async function refreshQueueBanner() {
     const items = await queueAll().catch(() => []);
     const n = items.length;
     el.queueBanner.classList.toggle("hidden", n === 0);
-    el.queueBanner.textContent = n ? `${n} receipt${n > 1 ? "s" : ""} waiting to send — will go automatically when online.` : "";
+    el.queueBanner.innerHTML = "";
+    if (n) {
+      const needSignin = items.some((x) => x.lastError && x.lastError.kind === "signin");
+      const msg = document.createElement("div");
+      msg.textContent = `${n} receipt${n > 1 ? "s" : ""} waiting to send` + (navigator.onLine ? (items.some((x) => x.lastError) ? " — see why below." : " — sending…") : " — will go automatically when you're online.");
+      const row = document.createElement("div"); row.style.cssText = "display:flex;gap:8px;margin-top:8px;flex-wrap:wrap";
+      const go = document.createElement("button"); go.type = "button"; go.className = "del"; go.style.color = "var(--ink)"; go.textContent = "Send now";
+      go.onclick = async () => { go.disabled = true; go.textContent = "Sending…"; await flushQueue(); };
+      row.appendChild(go);
+      if (needSignin && !DEMO) {
+        const si = document.createElement("button"); si.type = "button"; si.className = "del"; si.style.color = "var(--ink)"; si.textContent = "Sign in again";
+        si.onclick = () => msalInstance().acquireTokenRedirect({ scopes: CFG.scopes, account: state.account });
+        row.appendChild(si);
+      }
+      el.queueBanner.append(msg, row);
+    }
     const ql = $("queue-list"); ql.innerHTML = ""; ql.classList.toggle("hidden", n === 0);
     items.forEach((sub) => {
       const li = document.createElement("li");
       const when = new Date(sub.meta.captured_at).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-      li.innerHTML = `<span class="grow">${when} · ${escapeHtml(sub.meta.expense_type || "Photo")}<br><span class="muted">${escapeHtml(sub.meta.reason || "")}</span></span>`;
+      const err = sub.lastError ? `<br><span style="color:var(--warn);font-size:13px">Not sent: ${escapeHtml(sub.lastError.text)}</span>` : "";
+      li.innerHTML = `<span class="grow">${when} · ${escapeHtml(sub.meta.expense_type || "Photo")}<br><span class="muted">${escapeHtml(sub.meta.reason || "")}</span>${err}</span>`;
       const del = document.createElement("button"); del.type = "button"; del.className = "del"; del.textContent = "Remove";
       del.onclick = async () => {
         if (!confirm("Remove this receipt? It hasn't been sent yet, so finance will never see it.")) return;
@@ -1012,7 +1070,7 @@
   el.reason.addEventListener("input", updateReasonPreview);
   wireScan();
   [el.nMuir, el.nClients].forEach((i) => i.addEventListener("input", updateSolo));
-  $("solo-confirm").addEventListener("change", () => el.sendErr.classList.add("hidden"));
+  soloBox().addEventListener("change", () => el.sendErr.classList.add("hidden"));
   $("btn-home").onclick = goHome;
   $("btn-home2").onclick = goHome;
   $("btn-done-home").onclick = goHome;
