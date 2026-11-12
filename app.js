@@ -5,7 +5,7 @@
    Demo mode (?demo=1): no sign-in, uploads are simulated — for previews and UI testing. */
 (() => {
   "use strict";
-  const APP_VERSION = "0.6.6";
+  const APP_VERSION = "0.7.0";
   const CFG = window.MUIR_CONFIG || {};
   // v0.4.1 lists live here (not in config.js) so the deployed config.js with the real clientId stays untouched.
   const APP_LISTS = {
@@ -160,6 +160,7 @@
         navigateToLoginRequestUrl: false,
       },
       cache: { cacheLocation: "localStorage" },
+      system: { iframeHashTimeout: 6000 },        // fail fast when iPhone blocks the hidden sign-in refresh
     });
     return msal;
   }
@@ -210,8 +211,13 @@
       const r = await m.acquireTokenSilent(req);
       return r.accessToken;
     } catch (e) {
-      if (e instanceof window.msal.InteractionRequiredAuthError) {
-        const err = new Error("Sign-in expired"); err.signin = true; throw err;
+      // Microsoft only lets a web app refresh its sign-in quietly for about 24 hours; after that the quiet refresh needs
+      // a hidden page that iPhone Safari blocks, so it fails with a timeout that looks like a network problem.
+      // Treat every such failure as "sign in again" unless the phone really is offline.
+      const code = String(e && (e.errorCode || e.name) || "");
+      const offline = !navigator.onLine || /no_network_connectivity/.test(code);
+      if (e instanceof window.msal.InteractionRequiredAuthError || (!offline && (e instanceof window.msal.BrowserAuthError || /timeout|login_required|consent_required|interaction_required|no_tokens_found|token_refresh_required|block_iframe|no_account/i.test(code)))) {
+        const err = new Error("Sign-in expired (" + code + ")"); err.signin = true; throw err;
       }
       throw e;
     }
@@ -241,6 +247,20 @@
     return r;
   }
   // Upload one file into the Incoming folder. Simple PUT ≤ 4 MB, upload session above that.
+  // iPhone (Safari) bug: a photo saved in the app's storage (IndexedDB) as a Blob often can't be sent with fetch later —
+  // it fails with "Load failed" even when online. So receipts are now saved as plain bytes, and anything older is
+  // copied into a brand-new Blob just before upload.
+  async function bytesOf(b) {
+    if (!b) return null;
+    if (b instanceof ArrayBuffer) return b;
+    try { return await b.arrayBuffer(); }
+    catch (e) { const err = new Error("photo-unreadable: " + (e && e.message ? e.message : e)); err.unreadable = true; throw err; }
+  }
+  async function freshBlob(f) {
+    const bytes = f.bytes || await bytesOf(f.blob);
+    return new Blob([bytes], { type: f.type || "image/jpeg" });
+  }
+  function asBlob(x, type) { return !x ? null : x instanceof Blob ? x : new Blob([x], { type: type || "image/jpeg" }); }
   async function uploadFile(name, blob, conflict = "rename") {
     if (DEMO) { await token(); await sleep(400); if (localStorage.getItem("muir.demoFail") === "403") throw new Error("Graph 403: Access denied"); console.log("[demo] uploaded", name, blob.size, conflict); return { name }; }
     const base = `/drives/${CFG.driveId}/items/${CFG.incomingFolderId}:/${encodeURIComponent(name)}:`;
@@ -252,7 +272,7 @@
     }
     const s = await (await graph(`${base}/createUploadSession`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": "rename", name } }),
+      body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": conflict, name } }),
     })).json();
     const chunk = 5 * 320 * 1024; // multiple of 320 KiB as Graph requires
     let last = null;
@@ -728,7 +748,7 @@
   }
   async function transmit(sub) {
     // "replace" so a retry after a half-finished upload overwrites rather than making duplicates (names are unique per receipt)
-    for (const f of sub.files) await uploadFile(f.name, f.blob, "replace");
+    for (const f of sub.files) await uploadFile(f.name, await freshBlob(f), "replace");
     const metaBlob = new Blob([JSON.stringify(sub.meta, null, 2)], { type: "application/json" });
     // Uploaded last so its presence marks the set complete; a details-later completion replaces the pending meta.
     await uploadFile(`${sub.prefix}_meta.json`, metaBlob, "replace");
@@ -741,7 +761,7 @@
     const draft = {
       prefix: fin0 ? fin0.prefix : `${stamp()}_${local}`, local: true,
       captured_at: fin0 && fin0.captured_at ? fin0.captured_at : new Date().toISOString(),
-      files: state.files.map((f) => ({ type: f.type, blob: f.blob, kind: f.kind, orig: f.orig || null, scan: f.scan || null })), pages: state.files.length,
+      files: await Promise.all(state.files.map(async (f) => ({ type: f.type, bytes: await bytesOf(f.blob), kind: f.kind, orig: f.orig ? await bytesOf(f.orig) : null, scan: f.scan || null }))), pages: state.files.length,
       fields: { expenseType: state.expenseType, reason: el.reason.value, currency: state.currency, cash: state.cash, personal: state.personal,
                 attendees: el.attendees.value, nMuir: el.nMuir.value, nClients: el.nClients.value, project: el.project.value, belongs: state.belongs || "", solo: soloBox().checked },
     };
@@ -761,15 +781,18 @@
   async function openDraftInner(prefix) {
     const d = (await draftsAll()).find((x) => x.prefix === prefix); if (!d) { renderDrafts(); return; }
     // iPhone sometimes drops photos saved inside the app; check the photo can still be read before opening
-    const firstBlob = d.local ? (d.files && d.files[0] && d.files[0].blob) : d.thumb;
-    if (firstBlob) {
+    const firstBlob = d.local ? (d.files && d.files[0] && (d.files[0].blob || d.files[0].bytes)) : d.thumb;
+    if (firstBlob && firstBlob instanceof Blob) {
       try { await firstBlob.slice(0, 16).arrayBuffer(); }
       catch (_) { alert("The photo for this receipt was cleared from the phone, so it can't be opened. Please Delete it and snap the receipt again."); return; }
     }
     resetForm();
     if (d.local) {
       state.finishing = { prefix: d.prefix, captured_at: d.captured_at, local: true };
-      state.files = d.files.map((f) => ({ ...f, previewUrl: f.kind === "image" ? URL.createObjectURL(f.blob) : null }));
+      state.files = d.files.map((f) => {
+        const blob = asBlob(f.blob || f.bytes, f.type), orig = asBlob(f.orig, "image/jpeg");
+        return { type: f.type, kind: f.kind, scan: f.scan || null, blob, orig, name: f.name, previewUrl: f.kind === "image" ? URL.createObjectURL(blob) : null };
+      });
       const x = d.fields || {};
       state.expenseType = x.expenseType || null; state.cash = !!x.cash; state.personal = !!x.personal;
       el.reason.value = x.reason || ""; el.attendees.value = x.attendees || ""; el.nMuir.value = x.nMuir || ""; el.nClients.value = x.nClients || ""; el.project.value = x.project || "";
@@ -797,6 +820,7 @@
     const wasFinishing = !!state.finishing;
     const wasLocal = wasFinishing && !!state.finishing.local;
     localStorage.setItem("muir.lastType", state.expenseType);
+    for (const f of sub.files) { if (!f.bytes) { f.bytes = await bytesOf(f.blob); delete f.blob; } }   // bytes, not Blob (iPhone bug)
     await queuePut(sub);              // saved on the phone before any network call
     inflight.add(sub.id);
     try {
@@ -804,13 +828,15 @@
       await transmit(sub);
       await queueDel(sub.id);
       addRecent(sub, "sent");
+      state.needSignin = false; renderSigninBar();
       showDone(wasFinishing && !wasLocal ? "Details sent" : "Sent", `${sub.meta.expense_type} · ${sub.meta.reason}`);
     } catch (e) {
       addRecent(sub, "queued");
       const wf = navigator.onLine ? whyFailed(e) : { kind: "network", text: "You're offline — it will send when you're back online." };
       sub.lastError = wf; sub.lastTry = new Date().toISOString(); sub.tries = 1; await queuePut(sub).catch(() => {});
       const why = wf.text;
-      showDone("Saved — will send shortly", `${sub.meta.expense_type} · ${sub.meta.reason}. ${why}`);
+      showDone(wf.kind === "signin" ? "Saved — sign in to send" : "Saved — will send shortly", `${sub.meta.expense_type} · ${sub.meta.reason}. ${why}`);
+      if (wf.kind === "signin") setTimeout(() => signInToSend(false), 1500);   // the receipt is safe on the phone; sends on return
     } finally {
       inflight.delete(sub.id);
       if (wasFinishing) await draftDel(sub.prefix);
@@ -896,16 +922,30 @@
     try {
       for (const sub of await queueAll()) {
         if (inflight.has(sub.id)) continue;
-        try { await transmit(sub); await queueDel(sub.id); addRecent(sub, "sent"); }
+        try { await transmit(sub); await queueDel(sub.id); addRecent(sub, "sent"); state.needSignin = false; renderSigninBar(); }
         catch (e) {
           console.warn("Queue item still pending:", sub.id, e.message);
           sub.lastError = whyFailed(e); sub.lastTry = new Date().toISOString(); sub.tries = (sub.tries || 0) + 1;
           await queuePut(sub).catch(() => {});
+          if (e.signin) { signInToSend(false); return; }
           if (e.signin || !navigator.onLine) break;     // same for every item: stop and wait
           // otherwise carry on with the next receipt — one bad item mustn't hold up the rest
         }
       }
     } finally { flushing = false; refreshQueueBanner(); }
+  }
+  // ---------- Sign-in only when it's needed, and never in the middle of a receipt ----------
+  // The app opens straight to the camera using the account remembered on the phone. Talking to Microsoft happens in the
+  // background. If Microsoft wants a fresh sign-in, we go there only when nothing is in progress (receipts are safe on
+  // the phone) — or show a "Sign in to send" bar on the home screen.
+  function busy() { return state.files.length > 0 || screens.details.classList.contains("active") || screens.scan.classList.contains("active") || screens.admin.classList.contains("active"); }
+  function renderSigninBar() { const b = document.getElementById("signin-banner"); if (b) b.classList.toggle("hidden", !state.needSignin); }
+  function signInToSend(userAsked) {
+    state.needSignin = true; renderSigninBar();
+    if (DEMO) return;
+    if (!userAsked && (busy() || sessionStorage.getItem("muir.autoSignin"))) return;   // once per session automatically
+    sessionStorage.setItem("muir.autoSignin", "1");
+    msalInstance().acquireTokenRedirect({ scopes: CFG.scopes, account: state.account }).catch((e) => console.warn("sign-in redirect", e));
   }
   // Plain-English reason an upload failed, saved with the receipt and shown in the waiting list
   function whyFailed(e) {
@@ -914,8 +954,8 @@
     if (/Graph 403|accessDenied/i.test(m)) return { kind: "access", text: "SharePoint won't accept it: you don't have permission to upload. Ask Max to check your access to Corporate Cards › Incoming." };
     if (/Graph 401/.test(m)) return { kind: "signin", text: "Microsoft didn't accept your sign-in — tap Sign in again." };
     if (/Graph 404/.test(m)) return { kind: "folder", text: "The receipts folder couldn't be found. Tell Max (the app may need an update)." };
-    if (/NotReadable|WebKitBlobResource|could not be read|NotFoundError/i.test(m)) return { kind: "photo", text: "The photo saved on this phone can't be read any more (the iPhone cleared it). Remove this one and snap the receipt again." };
-    if (/Failed to fetch|NetworkError|Load failed|offline|timed? ?out/i.test(m)) return { kind: "network", text: "Couldn't reach Microsoft — it will try again when the connection is better." };
+    if ((e && e.unreadable) || /NotReadable|WebKitBlobResource|could not be read|NotFoundError/i.test(m)) return { kind: "photo", text: "The photo saved on this phone can't be read any more (the iPhone cleared it). Remove this one and snap the receipt again." };
+    if (/Failed to fetch|NetworkError|Load failed|network|offline|timed? ?out/i.test(m)) return { kind: "network", text: (navigator.onLine ? "Couldn't send (" + m.slice(0, 60) + ") — tap Send now to try again." : "No connection — it will send when you're back online.") };
     return { kind: "other", text: "Upload failed: " + m.slice(0, 120) };
   }
   async function refreshQueueBanner() {
@@ -1069,6 +1109,7 @@
   el.btnLater.onclick = sendLater;
   el.reason.addEventListener("input", updateReasonPreview);
   wireScan();
+  $("btn-signin-send").onclick = () => signInToSend(true);
   [el.nMuir, el.nClients].forEach((i) => i.addEventListener("input", updateSolo));
   soloBox().addEventListener("change", () => el.sendErr.classList.add("hidden"));
   $("btn-home").onclick = goHome;
@@ -1102,26 +1143,51 @@
   $("btn-skipwait").onclick = () => skipWait("skip");
 
   async function boot() {
-    step("Checking your sign-in…");
-    const ok = await Promise.race([withTimeout(initAuth(), 15000, "slow"), skipped]);
+    step("Starting…");
+    // 1. Who is this? Read from the phone (no network unless we're coming back from the Microsoft sign-in page).
+    const ok = await Promise.race([withTimeout(initAuth(), 12000, "slow"), skipped]);
     if (ok === "slow" || ok === "skip") {
-      // MSAL couldn't finish (no connection): use the account remembered on this phone, if any
       if (DEMO) state.user = { name: "Demo User", upn: "demo@muir.com.au" };
       else try { const m = msalInstance(); const a = m.getActiveAccount() || m.getAllAccounts()[0]; if (a) { state.account = a; state.user = { name: String(a.name || a.username).split("|")[0].trim(), upn: a.username }; } } catch (_) {}
       if (!state.user) { show("signin"); return; }
     } else if (!ok) { show("signin"); return; }
-    step("Connecting to Microsoft…");
-    const signed = await Promise.race([withTimeout(ensureSignedIn(), 10000, true), skipped.then(() => true)]);
-    if (!signed) return;                        // redirecting to Microsoft; the app reloads after
+    sessionStorage.removeItem("muir.autoSignin");
+    // 2. Open straight away with what's saved on the phone (lists, cardholders, unsent receipts).
     el.who.textContent = state.user.name;
-    step("Getting the latest lists…");
-    await Promise.race([withTimeout(Promise.all([loadRemoteConfig(), loadCardholders()]), 8000), skipped]);
-    if (!state.chDoc) { try { applyCardholders(JSON.parse(localStorage.getItem("muir.cardholders") || "null") || builtInDoc()); } catch (_) { applyCardholders(builtInDoc()); } }
-    renderTypes(); renderCurrencies(); updateConditional(); renderRecent(); setNet(); refreshQueueBanner(); renderDrafts(); remindDrafts();
+    try { applyCardholders(JSON.parse(localStorage.getItem("muir.cardholders") || "null") || builtInDoc()); } catch (_) { applyCardholders(builtInDoc()); }
+    renderTypes(); renderCurrencies(); updateConditional(); renderRecent(); setNet(); refreshQueueBanner(); renderDrafts(); remindDrafts(); renderSigninBar();
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { renderDrafts(); remindDrafts(); flushQueue(); } });
     started = true; clearTimeout(slowTimer);
     show("capture");
+    // 3. In the background: refresh the Microsoft sign-in, update the lists, send anything waiting.
+    background();
+  }
+  async function background() {
+    if (!DEMO) {
+      const t = await withTimeout(token().then(() => "ok", (e) => (e.signin ? "signin" : "net")), 12000, "slow");
+      if (t === "signin") {
+        state.needSignin = true; renderSigninBar();
+        // go to Microsoft now only if receipts are already waiting and nothing is in progress; otherwise when they next send
+        if ((await queueAll().catch(() => [])).length && !busy()) signInToSend(false);
+        return;
+      }
+      if (t === "ok") { state.needSignin = false; renderSigninBar(); }
+    }
+    await withTimeout(Promise.all([loadRemoteConfig(), loadCardholders()]), 10000);
+    if (!busy()) { renderTypes(); renderCurrencies(); }
     flushQueue();
+    checkForUpdate();
+  }
+  // Is a newer version on GitHub? (The phone's copy opens instantly; this tells people when to tap update.)
+  async function checkForUpdate() {
+    try {
+      const html = await (await fetch("./index.html?nosw=" + Date.now(), { cache: "no-store" })).text();
+      const m = html.match(/app\.js\?v=([0-9.]+)/);
+      if (m && m[1] !== APP_VERSION) {
+        await fetch("./index.html", { cache: "no-cache" }).catch(() => {});   // let the service worker store the new page
+        document.getElementById("update-bar").classList.remove("hidden");
+      }
+    } catch (_) { /* offline */ }
   }
   boot().catch((e) => {
     console.error("Start-up failed", e);

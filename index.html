@@ -142,6 +142,7 @@
 </head>
 <body>
 <div class="crash hidden" id="crash"></div>
+<div class="crash hidden" id="update-bar" style="background:var(--navy)">A new version of the app is ready. <a href="#" onclick="location.reload();return false">Tap to update</a></div>
 <header>
   <button type="button" class="brand" id="btn-home" aria-label="Home">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -208,6 +209,8 @@
     <input type="file" id="in-camera" accept="image/*" capture="environment" multiple>
     <input type="file" id="in-gallery" accept="image/*" multiple>
     <input type="file" id="in-file" accept="image/*,application/pdf" multiple>
+    <div class="queue hidden" id="signin-banner">Microsoft needs you to sign in again before receipts can send. Your receipts are safe on this phone.
+      <div style="margin-top:8px"><button type="button" class="del" style="color:var(--ink)" id="btn-signin-send">Sign in to send</button></div></div>
     <div class="queue hidden" id="queue-banner"></div>
     <ul class="list hidden" id="queue-list"></ul>
     <div class="card hidden" id="tofinish-card">
@@ -358,7 +361,7 @@
 
 <script src="msal-browser.min.js"></script>
 <script src="config.js"></script>
-<script src="scan.js?v=0.6.6"></script>
-<script src="app.js?v=0.6.6"></script>
+<script src="scan.js?v=0.7.0"></script>
+<script src="app.js?v=0.7.0"></script>
 </body>
 </html>
